@@ -26,6 +26,7 @@
    [https://www.postgresql.org/docs/17/index.html](https://www.postgresql.org/docs/17/index.html)
 ## Compile the System
 ```bash
+bash ./lib/import_local_jars.sh
 mvn package
 ```
 ## Running the System
