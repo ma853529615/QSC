@@ -1,4 +1,0 @@
-member_of_domain_region(22684,X) :- synset_domain_region_of(X,22684)
-instance_hyponym(684,X) :- instance_hypernym(X,684)
-member_of_domain_usage(2359,X) :- synset_domain_usage_of(X,2359)
-member_of_domain_usage(2283,X) :- synset_domain_usage_of(X,2283)

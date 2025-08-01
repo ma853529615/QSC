@@ -1,1 +1,0 @@
-original query: SELECT DISTINCT "hyponym"."hyponym_1", "hyponym"."hyponym_2" FROM "hyponym". original time: 4144804UCQ: (SELECT DISTINCT "hyponym"."hyponym_1", "hyponym"."hyponym_2" FROM "hyponym")rewrite time: 803231AQMAT rewrite time: 25749UCQ time: 4179197AQMAT: 2952866AQMAT: 0AQMAT: 0AQMAT query: SELECT DISTINCT hyponym.hyponym_1, hyponym.hyponym_2 FROM hyponym
