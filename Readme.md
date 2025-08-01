@@ -40,7 +40,7 @@ java -jar -Xmx{memory_limit} ./target/QSC-1.0.jar -I {absolute_path_of_program} 
 **Example:**
 
 ```bash
-java -jar -Xmx32G ./target/QSC-1.0.jar -I XX/QC_submit WN18 \
+java -jar -Xmx32G ./target/QSC-1.0.jar -I XX/QSC WN18 \
      -d pg \
      -i localhost:5432/wn18 \
      -s test#WN18 \
