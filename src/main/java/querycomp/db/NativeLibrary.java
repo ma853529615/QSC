@@ -11,12 +11,6 @@ public interface NativeLibrary extends Library {
         NativeLibrary.class
     );
 
-    // Linux: pthread_t pthread_self(void);
     long pthread_self();
-
-    // Windows: HANDLE GetCurrentThread(void);
     Pointer GetCurrentThread();
 }
-
-
-

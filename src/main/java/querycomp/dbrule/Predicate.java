@@ -4,13 +4,11 @@ public class Predicate{
     public final String functor;
     public Argument[] args;
     public Integer duplicateID = 0;
-    protected Predicate(String functor, Argument[] args_array){
+    public Predicate(String functor, Argument[] args_array){
         this.functor = functor;
         args= args_array;
     }
-    public void setArg(int index, Argument arg){
-        args[index] = arg;
-    }
+
     public String[] getColumns(){
         String[] argNames = new String[args.length];
         for (int i = 0; i < args.length; i++){
@@ -29,7 +27,7 @@ public class Predicate{
         }
     }
     public String getSQLName(){
-        // consider duplicated predicates in a rule
+
         return fromCls();
     }
     public String bodySelCls(){
@@ -43,7 +41,17 @@ public class Predicate{
         return bodySelCls()+"."+getSoleColumnName(index);
     } 
     public String getSoleColumnName(int index){
-        // only column name
+
         return "\""+ functor + "_" + (index+1)+"\"";
+    }
+    public String toString(){
+        String result = functor + "(";
+        for(int i=0;i<args.length;i++){
+            result += args[i].toString();
+            if(i!=args.length-1){
+                result += ",";
+            }
+        }
+        return result + ")";
     }
 }

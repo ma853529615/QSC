@@ -25,4 +25,3 @@ public class CpuSet extends Structure {
         __bits[idx] |= (1L << bit);
     }
 }
-

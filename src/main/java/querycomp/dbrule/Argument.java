@@ -36,19 +36,23 @@ public class Argument{
         this.position = position;
     }
     static boolean checkVariable(String name){
-        // if name start with digit, it is constant
-        return !Character.isDigit(name.charAt(0));
+
+        if(Character.isDigit(name.charAt(0))){
+            return false;
+        }else if(name.contains("://")){
+            return false;
+        }else if(name != null && name.equals(name.toLowerCase())){
+            return false;
+        }
+        return true;
     }
-    // protected boolean equals(Argument another){
-    //     return this.name == another.name && this.isConstant == another.isConstant;
-    // }
+
     @Override
     public int hashCode() {
-        // return Objects.hash(name, isConstant, predict_id);
+
         return Objects.hash(name);
     }
 
-    // override equals method
     @Override
     public boolean equals(Object obj) {
         if (this == obj) {
@@ -68,7 +72,10 @@ public class Argument{
         }
     }
     public String getName(){
-        // return "\""+name+"\"";
+
+        return name;
+    }
+    public String toString(){
         return name;
     }
 }

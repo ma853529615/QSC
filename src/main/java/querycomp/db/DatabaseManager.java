@@ -17,11 +17,8 @@ import querycomp.util.Quadruple;
 import querycomp.util.Triple;
 import querycomp.dbrule.Argument;
 import java.io.*;
-import java.lang.Thread.State;
-import java.lang.reflect.Array;
 import java.nio.file.Paths;
 import java.sql.Connection;
-import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
@@ -30,6 +27,7 @@ import java.sql.Statement;
 import java.util.*;
 import java.util.stream.Collectors;
 import java.util.concurrent.*;
+import java.io.File;
 // TODO:
 // 1. Persistence
 // 2. Join
@@ -48,23 +46,28 @@ public class DatabaseManager {
     public String db_type;
     public int poolSize;
     public int threadCount;
+    public String cache="64GB";
     public int original_sum_records;
+    public boolean DEBUG = false;
 
     public HashMap<String, Integer> entity2id = new HashMap<String, Integer>();
     public Vector<Vector<String>> relationMeta = new Vector<Vector<String>>();
     public HashMap<String, Integer> relation2SumRecord = new HashMap<String, Integer> ();
     public HashMap<String, Integer> relation2id = new HashMap<String, Integer>();
     public HashMap<String, Vector<Pair<Predicate, String>>> direct_rewrites = new HashMap<String, Vector<Pair<Predicate, String>>>();
+    public HashMap<String, String> relation2cte = new HashMap<String, String>();
 
-    protected QueryExecutor queryExecutor;
+    protected QueryExecutorPool queryExecutor;
     protected ConnectionPool connectionPool;
     public static final String MAP_FILE_NAME = "mapping.txt";
     public static final String META_FILE_NAME = "meta.txt";
     public static final String RULE_FILE_NAME = "rules.txt";
     public static final String RDF_FILE_NAME = "entity.tsv";
-
-    public DatabaseManager(String path, String db_type, String db_info, int poolSize, int threadPoolSize, int id) throws Exception {
-
+    public DatabaseManager(String path, String db_type, String db_info, int poolSize, int threadPoolSize, int id, boolean DEBUG) throws Exception {
+        this(path, null, db_type, db_info, poolSize, threadPoolSize, id, DEBUG);
+    }
+    public DatabaseManager(String path, String rule_path, String db_type, String db_info, int poolSize, int threadPoolSize, int id, boolean DEBUG) throws Exception {
+        this.DEBUG = DEBUG;
         int availableCores = Runtime.getRuntime().availableProcessors();
         if (poolSize > availableCores) {
             System.out.println("Warning: Specified thread count exceeds available CPU cores.");
@@ -76,17 +79,27 @@ public class DatabaseManager {
         this.threadCount = threadPoolSize;
         this.db_info = db_info;
         this.db_type = db_type;
-        this.connectionPool = new ConnectionPool(db_info, db_type, poolSize, id, false);
+        // 使用 reset=true，防止再次删除已有的 db 文件导致数据丢失
+        this.connectionPool = new ConnectionPool(db_info, db_type, poolSize, id, false, false);
         
-        this.queryExecutor = new QueryExecutor(connectionPool, threadPoolSize);
+        this.queryExecutor = new QueryExecutorPool(connectionPool, threadPoolSize);
 
-        String rule_path = path + "/" + RULE_FILE_NAME;
+        if(rule_path == null){
+            rule_path = path + "/" + RULE_FILE_NAME;
+        }else{
+            rule_path = rule_path + "/" + RULE_FILE_NAME;
+        }
 
         entity2id.put("null", 0);
         try(var reader = new BufferedReader(new FileReader(path + "/" + MAP_FILE_NAME))){
             String line;
             while ((line = reader.readLine())!=null) {
-                entity2id.put(line, entity2id.size());
+                String[] parts = line.split(" ");
+                if(parts.length==2){
+                    entity2id.put(parts[0], Integer.parseInt(parts[1]));
+                }else{
+                    entity2id.put(parts[0], entity2id.size());
+                }
             }
         } catch (Exception e) {
             throw new RuntimeException(e);
@@ -113,6 +126,7 @@ public class DatabaseManager {
         }
         
         // load all the table from the csv file
+        {
         Vector<Vector<String>> relationMeta_tmp = new Vector<Vector<String>>();
         HashMap<String, Integer> relation2id_tmp = new HashMap<String, Integer>();
         String load_query=null;
@@ -125,7 +139,11 @@ public class DatabaseManager {
             if(original_arity==2){
                 String relation_file_name = path+'/'+rel_name+ ".csv";
                 if(db_type.equals("duckdb")){
-                    load_query = "CREATE TABLE "+rel_name_1+" AS SELECT * FROM read_csv('" + relation_file_name + "')  ORDER BY "+ "\""+ rel_name+"_1\", "+ "\""+rel_name+"_2\";"; 
+                    if(!DEBUG){
+                        load_query = "CREATE TABLE "+rel_name_1+" AS SELECT * FROM read_csv('" + relation_file_name + "')  ORDER BY "+ "\""+ rel_name+"_1\", "+ "\""+rel_name+"_2\";"; 
+                    }else{
+                        load_query = "CREATE TABLE "+rel_name_1+" AS SELECT * FROM read_csv('" + relation_file_name + "')  ORDER BY "+ "\""+ rel_name+"_1\", "+ "\""+rel_name+"_2\" LIMIT 100;"; 
+                    }
                 }else if(db_type.equals("pg")){
                     // create table first 
                     String create_table = "CREATE TABLE "+rel_name_1+" (\""+rel_name+"_1\" INTEGER, \""+rel_name+"_2\" INTEGER)";
@@ -161,6 +179,7 @@ public class DatabaseManager {
                 }
                 ArrayTreeSet table_data = new ArrayTreeSet();
                 try (var reader = new BufferedReader(new FileReader(relation_file_name))) {  
+                    // get the first line of the file and confirm its length
                     String line;  
                     while ((line = reader.readLine()) != null) {  
                         // 如果行不是数字，则跳过该行  
@@ -177,13 +196,15 @@ public class DatabaseManager {
                         if(!entity2id.containsKey(rel_name)){
                             entity2id.put(rel_name, entity2id.size());
                         }
-                        tuple[1] = entity2id.get(rel_name);  
+                        tuple[1] = entity2id.get(rel_name);
                         table_data.add(tuple);
                     }  
                     appendTuples(table_data, "type");
                 }
             }
         }
+    
+
         // if type in the relation2id_tmp, then get the record number of the type table and update the relationMeta_tmp
         if(relation2id_tmp.containsKey("type")){
             int type_num = countRecords("type");
@@ -195,8 +216,9 @@ public class DatabaseManager {
             relation2SumRecord.put(metaInfo.get(0), Integer.parseInt(metaInfo.get(2)));
             original_sum_records += Integer.parseInt(metaInfo.get(2));
         }
-
+    }
         // if the rule file exists, then load the rules
+        // load rules with real entities
         if (new File(rule_path).exists()) {
             System.out.println("load rules from file: " + rule_path);
             String rules_all = "";
@@ -207,8 +229,19 @@ public class DatabaseManager {
                     if (!((ruleLine = ruleReader.readLine()) != null)) break;
                     rule_size++;
                     rule_size+=ruleLine.split(":-")[1].split("\\),").length;
-                    rules_vec.add(new DBRule(process_rule(ruleLine),0));
-                    rules_all += process_rule(ruleLine);
+
+                    DBRule r = new DBRule(process_rule(ruleLine),0);
+                    try{
+                        r.replaceConstantsWithMap(entity2id);
+                    }catch(Exception e){
+                        System.out.println(r.toString().replace(" ", ""));
+                        throw new RuntimeException(e);
+                    }
+                    if(!checkRuleLegal(r)){
+                        continue;
+                    }
+                    rules_vec.add(r);
+                    rules_all += process_rule(r.toString().replace(" ", ""));
                 }
                 rules = rules_vec.toArray(new DBRule[rules_vec.size()]);
             } catch (Exception e) {
@@ -218,7 +251,8 @@ public class DatabaseManager {
             
             try(DlgpParser parser = new DlgpParser(rules_all)){
                 while(parser.hasNext()){
-                    loaded_ruleset.add((fr.lirmm.graphik.graal.api.core.Rule) parser.next());
+                    fr.lirmm.graphik.graal.api.core.Rule rule = (fr.lirmm.graphik.graal.api.core.Rule) parser.next();
+                    loaded_ruleset.add(rule);
                 }
             }catch(Exception e){
                 throw new RuntimeException(e);
@@ -238,15 +272,51 @@ public class DatabaseManager {
     //     db.load
     //     return db;
     // }
+    private DBRule fr2DBrule(fr.lirmm.graphik.graal.api.core.Rule fr_rule, int id){
+        String rule = fr_rule.toString();
+        rule = rule.replace("\\2", "").replace("\1", "").split("\\] \\[")[1].replace("]", "").replace("[", "").replace("\"", "");
+        rule = rule.split(" -> ")[1] + " :- " + rule.split(" -> ")[0];
+        return new DBRule(rule, id);
+    }
+    private boolean checkRuleLegal(DBRule rule){
+        //check if all the variables in the head are in the body
+        for(Argument arg:rule.head.args){
+            if(!arg.isConstant){
+                boolean inBody = false;
+                for(Predicate body_pred:rule.body){
+                    for(Argument body_arg:body_pred.args){
+                        if(body_arg.isConstant){
+                            continue;
+                        }
+                        if(body_arg.name.equals(arg.name)){
+                            inBody = true;
+                            break;
+                        }
+                    }
+                    if(inBody){
+                        break;
+                    }
+                }
+                if(!inBody){
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
     public String process_rule(String rule_string){
         String[] parts = rule_string.split(":-");
         String[] bodys = parts[1].replace(" ","").split("\\),");
         String body = "";
         for(String body_part:bodys){
-            body += body_part+", ";
+            body += body_part;
+            if(body_part.equals(bodys[bodys.length-1])){
+                body += ".";
+            }else{
+                body += "), ";
+            }
         }
-        body = body.substring(0, body.length()-1);
-        return parts[0].replace(" ","")+":-"+body.substring(0, body.length()-1)+".";
+        return parts[0].replace(" ","")+":-"+body;
     }
     public Pair<RuleSet, DBRule[]> load_rules(String rule_path){
         RuleSet loaded_ruleset = new LinkedListRuleSet();
@@ -286,6 +356,7 @@ public class DatabaseManager {
         rewriter = new Rewriter(ruleSet, relationMeta, relation2id);
     }
     public void offline_rewrite() throws ParseException{
+        long start_time = System.nanoTime();
         // get all the predicates name in the database
         direct_rewrites = new HashMap<String, Vector<Pair<Predicate, String>>>();
         String pred_query;
@@ -303,6 +374,427 @@ public class DatabaseManager {
                 offline_rule_size += (rule.body.size()+1);
             }
         }
+        long end_time = System.nanoTime();
+        Monitor.dumpQueryInfo("offline_rewrite", "offline_rewrite time: "+(end_time-start_time));
+    }
+
+
+    public String[] direct_rewrite_cte_materialized(Predicate[] predicates,
+                                                    String dbType) {
+        return direct_rewrite_cte_materialized(predicates, dbType, true);
+    }
+
+    public String[] direct_rewrite_cte_materialized(Predicate[] predicates,
+                                                    String dbType, boolean single_var) {
+
+        List<String> stmts = new ArrayList<>();
+        Map<String,String> rel2cte = new HashMap<>();
+        HashSet<String> handled  = new HashSet<>();
+
+        for (Predicate p : predicates) {
+            String rel = p.functor;
+            if (relation2cte.containsKey(rel) && !handled.contains(rel)) {
+                String def  = relation2cte.get(rel).trim();
+                String[] parts = def.split("\\s+AS\\s+", 2);
+                String head  = parts[0].trim();        
+                String body  = parts[1].trim();       
+
+                String tableName = head.contains("(") ? head.substring(0, head.indexOf('(')).trim()
+                                                            : head;
+
+                if (body.startsWith("(") && body.endsWith(")")) {
+                    body = body.substring(1, body.length()-1).trim();
+                }
+
+                String create;
+                if ("duckdb".equalsIgnoreCase(dbType)) {
+                    create = "CREATE TEMPORARY TABLE " + tableName + " AS " + body + ";";
+                } else { 
+                    create = "CREATE MATERIALIZED VIEW IF NOT EXISTS " + head + " AS " + body + ";";
+                }
+                stmts.add(create);
+                rel2cte.put(rel, tableName);
+                handled.add(rel);
+            } else {
+                rel2cte.put(rel, rel); 
+            }
+        }
+
+        StringBuilder sql = new StringBuilder("SELECT DISTINCT ");
+
+        Map<String,int[]> vars = new LinkedHashMap<>();
+        for (int i=0;i<predicates.length;i++) {
+            for (int j=0;j<predicates[i].args.length;j++) {
+                if (!predicates[i].args[j].isConstant) {
+                    vars.putIfAbsent(predicates[i].args[j].name, new int[]{i,j});
+                }
+            }
+        }
+        
+        if (single_var) {
+            // 只选择第一个变量
+            if (!vars.isEmpty()) {
+                int[] firstPos = vars.values().iterator().next();
+                // 使用CTE表名而不是原始表名，确保表名一致
+                String tableName = rel2cte.get(predicates[firstPos[0]].functor);
+                String quotedTableName = tableName.contains("_cte") ? "\"" + tableName + "\"" : tableName;
+                sql.append(quotedTableName).append(".").append(predicates[firstPos[0]].functor).append("_").append(firstPos[1]+1);
+            } else {
+                sql.append("1"); // 如果没有变量，选择常量1
+            }
+        } else {
+            // 选择所有变量
+            int cnt=0;
+            for (int[] pos : vars.values()) {
+                // 使用CTE表名而不是原始表名，确保表名一致
+                String tableName = rel2cte.get(predicates[pos[0]].functor);
+                String quotedTableName = tableName.contains("_cte") ? "\"" + tableName + "\"" : tableName;
+                sql.append(quotedTableName).append(".").append(predicates[pos[0]].functor).append("_").append(pos[1]+1);
+                if (++cnt<vars.size()) sql.append(", ");
+            }
+        }
+
+        sql.append(" FROM ");
+        for (int i=0;i<predicates.length;i++) {
+            String tableName = rel2cte.get(predicates[i].functor);
+            // 确保表名被正确引用，避免SQL解析错误
+            if (tableName.contains("_cte")) {
+                sql.append("\"").append(tableName).append("\"");
+            } else {
+                sql.append(tableName);
+            }
+            if (i<predicates.length-1) sql.append(", ");
+        }
+
+        StringBuilder where = new StringBuilder();
+        Map<String,List<int[]>> joins = new HashMap<>();
+        for (int i=0;i<predicates.length;i++)
+            for (int j=0;j<predicates[i].args.length;j++)
+                if (!predicates[i].args[j].isConstant)
+                    joins.computeIfAbsent(predicates[i].args[j].name, k->new ArrayList<>())
+                        .add(new int[]{i,j});
+
+        for (List<int[]> lst : joins.values())
+            if (lst.size()>1) {
+                String first = predicates[lst.get(0)[0]].functor+"_"+(lst.get(0)[1]+1);
+                for (int k=1;k<lst.size();k++)
+                    where.append(first)
+                        .append(" = ")
+                        .append(predicates[lst.get(k)[0]].functor)
+                        .append("_")
+                        .append(lst.get(k)[1]+1)
+                        .append(" AND ");
+            }
+
+        for (int i=0;i<predicates.length;i++)
+            for (int j=0;j<predicates[i].args.length;j++)
+                if (predicates[i].args[j].isConstant)
+                    where.append(predicates[i].functor).append("_").append(j+1)
+                        .append(" = ").append(predicates[i].args[j].name)
+                        .append(" AND ");
+
+        if (where.length()>0) {
+            sql.append(" WHERE ")
+            .append(where.substring(0, where.length()-5)); 
+        }
+
+        stmts.add(sql.toString());
+        return stmts.toArray(new String[0]);
+    }
+
+    /**
+     * 基于EXISTS子查询的CTE物化视图版本
+     * 与rule2SQL_EXISTS类似，使用嵌套EXISTS而不是JOIN
+     */
+    public String[] direct_rewrite_cte_materialized_EXISTS(Predicate[] predicates,
+                                                          String dbType) {
+        return direct_rewrite_cte_materialized_EXISTS(predicates, dbType, true);
+    }
+
+
+    public String[] direct_rewrite_cte_materialized_EXISTS(Predicate[] predicates,
+                                                          String dbType, boolean count) {
+
+        List<String> stmts = new ArrayList<>();
+        Map<String,String> rel2cte = new HashMap<>();
+        HashSet<String> handled  = new HashSet<>();
+
+        // 第一步：创建物化视图/临时表
+        for (Predicate p : predicates) {
+            String rel = p.functor;
+            if (relation2cte.containsKey(rel) && !handled.contains(rel)) {
+                String def  = relation2cte.get(rel).trim();
+                String[] parts = def.split("\\s+AS\\s+", 2);
+                String head  = parts[0].trim();        
+                String body  = parts[1].trim();       
+
+                String tableName = head.contains("(") ? head.substring(0, head.indexOf('(')).trim()
+                                                            : head;
+
+                if (body.startsWith("(") && body.endsWith(")")) {
+                    body = body.substring(1, body.length()-1).trim();
+                }
+
+                String create;
+                if ("duckdb".equalsIgnoreCase(dbType)) {
+                    create = "CREATE TEMPORARY TABLE " + tableName + " AS " + body + ";";
+                } else { 
+                    create = "CREATE MATERIALIZED VIEW IF NOT EXISTS " + head + " AS " + body + ";";
+                }
+                stmts.add(create);
+                rel2cte.put(rel, tableName);
+                handled.add(rel);
+            } else {
+                rel2cte.put(rel, rel); 
+            }
+        }
+
+        // 第二步：构建基于EXISTS的最终查询
+        if (predicates.length == 0) {
+            stmts.add("SELECT 1;");
+            return stmts.toArray(new String[0]);
+        }
+
+        // 选择主表（包含最多变量的表）
+        int mainTableIndex = selectMainTableForExists(predicates);
+        Predicate mainTable = predicates[mainTableIndex];
+
+        StringBuilder sql;
+        if (count) {
+            sql = new StringBuilder("SELECT DISTINCT ");
+        } else {
+            sql = new StringBuilder("SELECT ");
+        }
+
+        // 构建SELECT子句 - 只选择主表的列
+        Map<String,int[]> vars = new LinkedHashMap<>();
+        for (int i=0;i<predicates.length;i++) {
+            for (int j=0;j<predicates[i].args.length;j++) {
+                if (!predicates[i].args[j].isConstant) {
+                    vars.putIfAbsent(predicates[i].args[j].name, new int[]{i,j});
+                }
+            }
+        }
+        
+        if (count) {
+            // 只选择第一个变量，参考rule2SQL_EXISTS的count=true逻辑
+            if (!vars.isEmpty()) {
+                int[] firstPos = vars.values().iterator().next();
+                // 使用CTE表名而不是原始表名，确保表名一致
+                String tableName = rel2cte.get(predicates[firstPos[0]].functor);
+                String quotedTableName = tableName.contains("_cte") ? "\"" + tableName + "\"" : tableName;
+                sql.append(quotedTableName).append(".").append(predicates[firstPos[0]].functor).append("_").append(firstPos[1]+1);
+            } else {
+                sql.append("1"); // 如果没有变量，选择常量1
+            }
+        } else {
+            // 选择主表的所有变量
+            int cnt=0;
+            int totalMainTableVars = 0;
+            for (int[] pos : vars.values()) {
+                // 只选择主表的列，其他表的列通过EXISTS子查询获取
+                if (pos[0] == mainTableIndex) {
+                    totalMainTableVars++;
+                }
+            }
+            
+            for (int[] pos : vars.values()) {
+                // 只选择主表的列，其他表的列通过EXISTS子查询获取
+                if (pos[0] == mainTableIndex) {
+                    // 使用CTE表名而不是原始表名，确保表名一致
+                    String tableName = rel2cte.get(predicates[pos[0]].functor);
+                    String quotedTableName = tableName.contains("_cte") ? "\"" + tableName + "\"" : tableName;
+                    sql.append(quotedTableName).append(".").append(predicates[pos[0]].functor).append("_").append(pos[1]+1);
+                    if (++cnt < totalMainTableVars) sql.append(", ");
+                }
+            }
+        }
+
+        // 构建FROM子句（只包含主表）
+        String tableName = rel2cte.get(mainTable.functor);
+        // 确保表名被正确引用，避免SQL解析错误
+        if (tableName.contains("_cte")) {
+            sql.append(" FROM \"").append(tableName).append("\"");
+        } else {
+            sql.append(" FROM ").append(tableName);
+        }
+
+        // 构建WHERE子句（包含主表的常量条件和嵌套EXISTS）
+        StringBuilder where = new StringBuilder();
+        
+        // 添加主表的常量条件
+        for (int j=0;j<mainTable.args.length;j++) {
+            if (mainTable.args[j].isConstant) {
+                if (where.length() > 0) where.append(" AND ");
+                where.append(mainTable.functor).append("_").append(j+1)
+                     .append(" = ").append(mainTable.args[j].name);
+            }
+        }
+
+        // 初始化变量映射
+        Map<String, String> var2col = new HashMap<>();
+        for (int j = 0; j < mainTable.args.length; j++) {
+            if (!mainTable.args[j].isConstant) {
+                var2col.put(mainTable.args[j].name, mainTable.functor + "_" + (j+1));
+            }
+        }
+
+        // 构建嵌套EXISTS子查询
+        String nestedExists = buildNestedExistsForCTE(predicates, mainTableIndex + 1, rel2cte, var2col);
+        if (!nestedExists.isEmpty()) {
+            if (where.length() > 0) where.append(" AND ");
+            where.append(nestedExists);
+        }
+
+        if (where.length() > 0) {
+            sql.append(" WHERE ").append(where.toString());
+        }
+
+        stmts.add(sql.toString());
+        return stmts.toArray(new String[0]);
+    }
+
+    /**
+     * 为EXISTS查询选择主表
+     */
+    private int selectMainTableForExists(Predicate[] predicates) {
+        // 优先选择包含最多变量的表作为主表
+        int maxVars = -1;
+        int mainTableIndex = 0;
+        
+        for (int i = 0; i < predicates.length; i++) {
+            int varCount = 0;
+            for (int j = 0; j < predicates[i].args.length; j++) {
+                if (!predicates[i].args[j].isConstant) {
+                    varCount++;
+                }
+            }
+            if (varCount > maxVars) {
+                maxVars = varCount;
+                mainTableIndex = i;
+            }
+        }
+        
+        return mainTableIndex;
+    }
+
+    /**
+     * 为CTE构建嵌套EXISTS子查询
+     */
+// 递归构建嵌套EXISTS
+private String buildNestedExistsForCTE(Predicate[] predicates, int idx, Map<String, String> rel2cte, Map<String, String> var2col) {
+    if (idx >= predicates.length) return "";
+    Predicate pred = predicates[idx];
+    String alias = pred.functor;
+    List<String> conds = new ArrayList<>();
+    // 1. 变量连接
+    for (int j = 0; j < pred.args.length; j++) {
+        if (!pred.args[j].isConstant && var2col.containsKey(pred.args[j].name)) {
+            // 只用已知变量做连接
+            conds.add(alias + "_" + (j+1) + " = " + var2col.get(pred.args[j].name));
+        }
+        if (pred.args[j].isConstant) {
+            conds.add(alias + "_" + (j+1) + " = " + pred.args[j].name);
+        }
+    }
+    // 2. 新变量加入var2col
+    Map<String, String> nextVar2Col = new HashMap<>(var2col);
+    for (int j = 0; j < pred.args.length; j++) {
+        if (!pred.args[j].isConstant && !nextVar2Col.containsKey(pred.args[j].name)) {
+            nextVar2Col.put(pred.args[j].name, alias + "_" + (j+1));
+        }
+    }
+    // 3. 嵌套
+    String inner = buildNestedExistsForCTE(predicates, idx+1, rel2cte, nextVar2Col);
+    if (!inner.isEmpty()) conds.add(inner);
+    
+    String tableName = rel2cte.get(alias);
+    // 确保表名被正确引用，避免SQL解析错误
+    String quotedTableName = tableName.contains("_cte") ? "\"" + tableName + "\"" : tableName;
+    
+    if (conds.isEmpty()) {
+        return "EXISTS (SELECT 1 FROM " + quotedTableName + ")";
+    } else {
+        return "EXISTS (SELECT 1 FROM " + quotedTableName + " WHERE " + String.join(" AND ", conds) + ")";
+    }
+}
+
+    /**
+     * 分析CTE中变量到表的连接关系
+     */
+    private Map<String, List<int[]>> analyzeVariableConnectionsForCTE(Predicate[] predicates) {
+        Map<String, List<int[]>> variableToTables = new HashMap<>();
+        
+        for (int i = 0; i < predicates.length; i++) {
+            for (int j = 0; j < predicates[i].args.length; j++) {
+                if (!predicates[i].args[j].isConstant) {
+                    String varName = predicates[i].args[j].name;
+                    variableToTables.computeIfAbsent(varName, k -> new ArrayList<>())
+                                  .add(new int[]{i, j});
+                }
+            }
+        }
+        
+        return variableToTables;
+    }
+    public void offline_rewrite_cte_union_all() throws ParseException{
+        long start_time = System.nanoTime();
+        String pred_query;
+        relation2cte = new HashMap<String, String>();
+        for(Vector<String> metaInfo: relationMeta){
+            pred_query = "?(X,Y):-"+metaInfo.get(0)+"(X,Y).";
+            String cte_query = "";
+            // ge the rewrite of the predicate query
+            DBRule[] rewrited_preds = rewriter.rewrite_query(pred_query).getFirst();
+            if(rewrited_preds.length>1){
+                for(DBRule rule:rewrited_preds){
+                    // 使用EXISTS版本而不是JOIN版本
+                    // if(rule.body.size() > 1){
+                    //     cte_query += "(" + rule.rule2SQL_EXISTS(false, false) + ")";
+                    // }else{
+                    cte_query += "(" + rule.rule2SQL(false, false) + ")";
+                    //}
+                    cte_query += " UNION ALL ";
+                    }
+                    if(cte_query.endsWith(" UNION ALL ")){
+                    cte_query = cte_query.substring(0, cte_query.length()-11);
+                    String query = metaInfo.get(0)+"_cte("+metaInfo.get(0)+"_1,"+metaInfo.get(0)+"_2)"+" AS ("+cte_query+")";
+                    relation2cte.put(metaInfo.get(0), query);
+                }
+            }
+        }
+        long end_time = System.nanoTime();
+        Monitor.dumpQueryInfo("offline_rewrite_cte", "offline_rewrite_cte time: "+(end_time-start_time));
+    }
+    public void offline_rewrite_cte() throws ParseException{
+        long start_time = System.nanoTime();
+        String pred_query;
+        relation2cte = new HashMap<String, String>();
+        for(Vector<String> metaInfo: relationMeta){
+            pred_query = "?(X,Y):-"+metaInfo.get(0)+"(X,Y).";
+            String cte_query = "";
+            // ge the rewrite of the predicate query
+            DBRule[] rewrited_preds = rewriter.rewrite_query(pred_query).getFirst();
+            if(rewrited_preds.length>1){
+                for(DBRule rule:rewrited_preds){
+                    // 使用EXISTS版本而不是JOIN版本
+                    // if(rule.body.size() > 1){
+                    //     cte_query += "(" + rule.rule2SQL_EXISTS(false, false) + ")";
+                    // }else{
+                    String sql = rule.rule2SQL(false, false, false);
+                    cte_query += "(" + sql + ")";
+                    //}
+                    cte_query += " UNION ";
+                    }
+                    if(cte_query.endsWith(" UNION ")){
+                    cte_query = cte_query.substring(0, cte_query.length()-7);
+                    String query = metaInfo.get(0)+"_cte("+metaInfo.get(0)+"_1,"+metaInfo.get(0)+"_2)"+" AS ("+cte_query+")";
+                    relation2cte.put(metaInfo.get(0), query);
+                }
+            }
+        }
+        long end_time = System.nanoTime();
+        Monitor.dumpQueryInfo("offline_rewrite_cte", "offline_rewrite_cte time: "+(end_time-start_time));
     }
     public void offline_rewrite_incremental() throws ParseException{
         String pred_query;
@@ -362,12 +854,17 @@ public class DatabaseManager {
             //     }
             // }
             if(flag){
-                rewrite_strs.add((new DBRule(rewrite_str, 0)).rule2SQL(false, false));
+                DBRule r = new DBRule(rewrite_str, 0);
+                if(r.body.size() > 1){
+                    rewrite_strs.add(r.rule2SQL_EXISTS(false, false));
+                }else{
+                    rewrite_strs.add(r.rule2SQL(false, false));
+                }
             }
         }
         return rewrite_strs.toArray(new String[rewrite_strs.size()]);
     }
-    public DBRule[] direct_rewrite_rule(String pred, Argument[] args){
+    public DBRule[] direct_rewrite_rule_dbrule(String pred, Argument[] args){
         // get the rewrites of the predicate
         Vector<DBRule> rewrite_strs = new Vector<DBRule>();
         // rewrite_strs.add("select * from \""+pred+"\"");
@@ -404,20 +901,39 @@ public class DatabaseManager {
         }
         return rewrite_strs.toArray(new DBRule[rewrite_strs.size()]);
     }
-    // protected void updateRelation(String rel_name, Integer[][] data) {
-    //     //replace the old relation with the new data
-    //     Statement stmt;
-    //     try {
-    //         stmt = dbcon.createStatement();
-    //     } catch (SQLException e) {
-    //         throw new RuntimeException(e);
-    //     }
-    // }
+    public String[] direct_rewrite_rule(String pred, Argument[] args){
+        // get the rewrites of the predicate
+        // Vector<DBRule> rewrite_strs = new Vector<DBRule>();
+        // rewrite_strs.add("select * from \""+pred+"\"");
+        Vector<String> rewrite_strs = new Vector<String>();
+        if(!direct_rewrites.containsKey(pred)){
+            return new String[0];
+        }
+        Vector<Pair<Predicate, String>> rewrites = direct_rewrites.get(pred);
+        
+        for(Pair<Predicate, String> rewrite:rewrites){
+            // get the args of the predicate
+            boolean flag = true;
+            String rewrite_str = rewrite.getSecond();
+            Predicate head = rewrite.getFirst();
+            for(int i=0;i<head.args.length;i++){
+                if(head.args[i].isConstant & args[i].isConstant & !head.args[i].name.equals(args[i].name)){
+                    flag = false;
+                    break;
+                }
+                if(args[i].isConstant & !head.args[i].isConstant){
+                    rewrite_str = rewrite_str.replace(head.args[i].name, args[i].name);
+                }
+            }
+            if(flag){
+                DBRule r = new DBRule(rewrite_str, 0);
+                rewrite_strs.add(r.rule2SQL(false, false));
+            }
+        }
+        return rewrite_strs.toArray(new String[rewrite_strs.size()]);
+    }
     public void dumpRdf(String Path){
-        // select all records in the db and write them to a file in the format "table_name, col1, col2, col3, ..."
-        // write the entity table to the file "./{outdir}/entity.tsv"
         try {
-            // make sure the out directory exists
             File outdirFile = new File(Path);
             if (!outdirFile.exists()) {
                 outdirFile.mkdirs();
@@ -426,14 +942,13 @@ public class DatabaseManager {
             for(Vector<String> metaInfo: relationMeta){
                 String rel_name = metaInfo.get(0);
                 int arity = Integer.parseInt(metaInfo.get(1));
-                boolean flag = queryExecutor.executeQuerySingleThread("SELECT * FROM '" + rel_name+"'", rs_ -> {
-                    while(rs_.next()){
-                        if (arity == 1){
-                            String line = rs_.getInt(rel_name+"_1")+"\\t"+ rel_name+ "\ttype";
+                queryExecutor.executeQuerySingleThread("SELECT * FROM " + rel_name, rs_ -> {
+                    while (rs_.next()) {
+                        if (arity == 1) {
+                            String line = rs_.getInt(rel_name + "_1") + "\\t" + rel_name + "\ttype";
                             entityWriter.println(line);
-                        }
-                        else{
-                            String line = rs_.getInt(rel_name+"_1")+ ("\t" + rel_name + "\t") + rs_.getInt(rel_name+"_2");
+                        } else {
+                            String line = rs_.getInt(rel_name + "_1") + ("\t" + rel_name + "\t") + rs_.getInt(rel_name + "_2");
                             entityWriter.println(line);
                         }
                         entityWriter.flush();
@@ -456,9 +971,6 @@ public class DatabaseManager {
         return c;
     }
     public int countAllRecords() throws Exception{
-    /*
-     * count all the records in the database
-     */
         int recordsNum =0;
         for(int i=0;i<relationMeta.size();i++){
             String rel_name = relationMeta.get(i).get(0);
@@ -510,77 +1022,56 @@ public class DatabaseManager {
         return recordsNum;
         }
 
-    // public Vector<Vector<int[]>> groundingQuery(DBRule query, int[] target_gold) throws Exception{
-        
-    //     String infer_sql = query.rule2SQL(false, true, target_gold);
-    //     Vector<ArrayTreeSet> rs = queryExecutor.executeQuerySingleThread(infer_sql, rs_ -> {
-    //         Vector<ArrayTreeSet> tuples = new Vector<ArrayTreeSet>();
-    //         ArrayTreeSet record = new ArrayTreeSet();
-    //         int target_table_id = relation2id.get(query.head.functor);
-    //         int arity = query.head.args.length;
-    //         int[] reusable_tuple = new int[arity+1];
-    //         while(rs_.next()){
-    //             ArrayTreeSet tuple = new ArrayTreeSet();
-    //             for(int i=0;i<query.body.size();i++){
-    //                 for(int j=0;j<arity; j++){
-    //                     reusable_tuple[j] = rs_.getInt(j+1);
-    //                 }
-    //                 reusable_tuple[arity] = target_table_id;
-    //                 // if the t is not equal to the target_gold, then add it to the tuple
-    //                 record.add(reusable_tuple.clone());
-    //             }
-    //             // check if the tuple is equals to target_records
-    //             tuples.add(record);
-    //         }
-    //         return tuples
-    //     });
-    //     return tuples;
-    // }
     public void set_readonly_mode() throws Exception{
-        // if(db_type.equals("duckdb")){
-        //     Connection conn = connectionPool.getConnection();
-        //     Statement stmt = conn.createStatement();
-        //     stmt.execute("CHECKPOINT");
-        //     stmt.close();
-        //     connectionPool.releaseConnection(conn);
-        //     connectionPool.closeAllConnections();
-        //     connectionPool = new ConnectionPool(db_info, db_type, poolSize, id, true, true);
-        //     queryExecutor = new QueryExecutor(connectionPool, threadCount);
-        // }
     }
     public void set_write_mode() throws Exception{
-        // if(db_type.equals("duckdb")){
-        //     Connection conn = connectionPool.getConnection();
-        //     Statement stmt = conn.createStatement();
-        //     stmt.execute("CHECKPOINT");
-        //     stmt.close();
-        //     connectionPool.releaseConnection(conn);
-        //     connectionPool.closeAllConnections();
-        //     connectionPool = new ConnectionPool(db_info, db_type, 1, id, false, true);
-        //     queryExecutor = new QueryExecutor(connectionPool, 1);
-        // }
     }
     public void releaseCon() throws SQLException{
         connectionPool.closeAllConnections();
     }
+
+    public void close_connection() throws SQLException {
+        try {
+            if (connectionPool != null) {
+                connectionPool.closeAllConnections();
+                // Monitor.logINFO("数据库连接已关闭");
+            }
+        } catch (Exception e) {
+            Monitor.logINFO("关闭数据库连接时发生错误: " + e.getMessage());
+            throw e;
+        }
+    }
+
+    public void recover_connection() throws Exception {
+        try {
+            // 重新创建连接池
+            this.connectionPool = new ConnectionPool(db_info, db_type, poolSize, id, false, true);
+            this.queryExecutor = new QueryExecutorPool(connectionPool, threadCount);
+            
+            // Monitor.logINFO("数据库连接已恢复");
+        } catch (Exception e) {
+            Monitor.logINFO("恢复数据库连接时发生错误: " + e.getMessage());
+            throw e;
+        }
+    }
     public void clear_cache() throws Exception{
         // set_readonly_mode();
         // ProcessBuilder processBuilder = new ProcessBuilder("free", "&&", "sync");
-        // processBuilder.redirectErrorStream(true);  
+        // processBuilder.redirectErrorStream(true);
         // Process process = processBuilder.start();
-        // int exitCode = process.waitFor(); 
-        // // processBuilder = new ProcessBuilder("bash", "-c", "sync; echo 3 | /usr/local/sbin/drop_caches_1");  
+        // int exitCode = process.waitFor();
+        // // processBuilder = new ProcessBuilder("bash", "-c", "sync; echo 3 | /usr/local/sbin/drop_caches_1");
         // // process = processBuilder.start();
-        // // exitCode = process.waitFor(); 
-        // // processBuilder = new ProcessBuilder("bash", "-c", "sync; echo 3 | /usr/local/sbin/drop_caches_2"); 
+        // // exitCode = process.waitFor();
+        // // processBuilder = new ProcessBuilder("bash", "-c", "sync; echo 3 | /usr/local/sbin/drop_caches_2");
         // // process = processBuilder.start();
-        // // exitCode = process.waitFor();  
-        // processBuilder = new ProcessBuilder("/usr/local/sbin/drop_caches_3"); 
+        // // exitCode = process.waitFor();
+        // processBuilder = new ProcessBuilder("/usr/local/sbin/drop_caches_3");
         // process = processBuilder.start();
-        // exitCode = process.waitFor();  
-        // processBuilder = new ProcessBuilder("free"); 
+        // exitCode = process.waitFor();
+        // processBuilder = new ProcessBuilder("free");
         // process = processBuilder.start();
-        // exitCode = process.waitFor();  
+        // exitCode = process.waitFor();
     }
     public void print_tables() {  
 
@@ -594,347 +1085,668 @@ public class DatabaseManager {
             return null;
         });
     }  
-    public void test_query(DatabaseManager origin_db, boolean bench, boolean valiation, boolean decomp) throws Exception{
-
-        // deleteAsistantColumns();
-        // Vector<ArrayTreeSet> results = new Vector<ArrayTreeSet>();
-        // Vector<ArrayTreeSet> origin_results = new Vector<ArrayTreeSet>();
-        // Vector<ArrayTreeSet> concurrent_results = new Vector<ArrayTreeSet>();
-        int[] test_threads = new int[]{1, 2, 4, 8, 16, 32, 64};
-        if(!valiation){
-            if((dbName.startsWith("LUBM")||dbName.startsWith("LUBM_compressed")) & bench){
-            // if(false){
-                // every line in the file is a query
-                // load the queries
-                String query_file = "./LUBM_queries/conj_queries.sql";
-                BufferedReader reader = new BufferedReader(new FileReader(query_file));
-                String line;
-                String[] queries = new String[100];
-                int query_num = 0;
-                while((line = reader.readLine())!=null){
-                    String[] line_split;
-                    if(line.contains("), ")){
-                        line_split = line.split("\\), ");
-                    }else{
-                        line_split = new String[1];
-                        line_split[0] = line;
-                    }
-                    String query = "";
-                    for(String p:line_split){
-                        String[] p_splits = p.split("\\(");
-                        query += p_splits[0] + "(";
-                        String[] args_raw = p_splits[1].split(",");
-                        for(int i=0;i<args_raw.length;i++){
-                            String arg = args_raw[i].replace(")", "").strip();
-                            if(arg.length()>1){
-                                try{
-                                    arg = entity2id.get(arg).toString();}
-                                catch(Exception e){
-                                    throw new RuntimeException(e);
-                                }
-                            }
-                            query += arg;
-                            if(i!=args_raw.length-1){
-                                query += ",";
-                            }
-                        }
-                        query += "), ";
-                    }
-                    query = query.substring(0, query.length()-2);
-                    queries[query_num] = query;
-                    query_num++;
+    public String[] loadGeneratedQueries(String path, boolean test) throws Exception{
+        String query_file = path+"/generated_queries.sql";
+        if(test){
+            query_file = path+"/generated_queries_test.sql";
+        }
+        try (BufferedReader reader = new BufferedReader(new FileReader(query_file))) {
+            String line;
+            Vector<String> queries = new Vector<String>();
+            int query_num = 0;
+            while((line = reader.readLine())!=null){
+                String[] line_split;
+                if(line.contains("), ")){
+                    line_split = line.split("\\), ");
+                }else{
+                    line_split = new String[1];
+                    line_split[0] = line;
                 }
-                reader.close();
-                for(int i=0;i<query_num;i++){
-                    HashSet<String> vars = new HashSet<>();
-                    boolean timeout = false;
-                    long rewrite_time=0;
-                    DBRule[] rewrited_queries=null;
-                    // if query length is 1, then use the direct_rewrite
-                    String query_f = "?(X):-" + queries[i] +'.';
-                    if(!bench&&queries[i].split(", ").length==1){
-                        // get the argument
-                        long rewrite_start = System.nanoTime();
-                        String[] split_1 = queries[i].split("\\(");
-                        String rel_name = split_1[0];
-                        Argument[] args = new Argument[2];
-                        args[0] = new Argument(split_1[1].split(",")[0], 0, 0);
-                        args[1] = new Argument(split_1[1].split(",")[1].replace(")", ""), 0, 1);
-                        rewrited_queries = direct_rewrite_rule(rel_name, args);
-                        long rewrite_end = System.nanoTime();
-                        rewrite_time = rewrite_end - rewrite_start;
-                    }else{
-                        // Pair<DBRule[], Long> rewrite_pair = rewriter.rewrite_query(query_f);
-                        ExecutorService executor = Executors.newSingleThreadExecutor();
-                        // 你的重写查询方法，返回一个 Pair<DBRule[], Long> 类型的结果
-                        Callable<Pair<DBRule[], Long>> task = () -> {
-                            // 调用 rewrite_query 方法
-                            return rewriter.rewrite_query(query_f);
-                        };
-                        java.util.concurrent.Future<Pair<DBRule[], Long>> future = executor.submit(task);
-                        Pair<DBRule[], Long> rewrite_pair = null;
-                        try {
-                            rewrite_pair = future.get(5L, java.util.concurrent.TimeUnit.SECONDS);
-                            // 在这里使用 result
-                        } catch (TimeoutException e) {  
-                            System.out.println("Task timed out!");
-                            future.cancel(true); // 强制取消任务
-                            timeout = true;
-                        } catch (InterruptedException | ExecutionException e) {
-                            e.printStackTrace();
-                        } finally {
-                            executor.shutdown(); // 关闭线程池
-                        }
-                        if(timeout){
-                            Monitor.setQueryINFO(queries[i], "timeout\ttimeout\ttimeout\ttimeout\ttimeout");
-                            continue;
-                        }else{
-                            rewrited_queries = rewrite_pair.getFirst();
-                            rewrite_time = rewrite_pair.getSecond();
+                String query = "";
+                for(String p:line_split){
+                    String[] p_splits = p.split("\\(");
+                    query += p_splits[0] + "(";
+                    String[] args_raw = p_splits[1].split(",");
+                    for(int i=0;i<args_raw.length;i++){
+                        String arg = args_raw[i].replace(")", "").strip();
+
+                        query += arg;
+                        if(i!=args_raw.length-1){
+                            query += ",";
                         }
                     }
+                    query += "), ";
+                }
+                query = query.substring(0, query.length()-2);
+                queries.add(query);
+                query_num++;
+            }
+            return queries.toArray(new String[queries.size()]);
+        }
+    }
+    public String[] loadLUBMQueries() throws Exception{
+        String query_file = "./LUBM_queries/conj_queries.sql";
+        BufferedReader reader = new BufferedReader(new FileReader(query_file));
+        String line;
+        String[] queries = new String[100];
+        int query_num = 0;
+        while((line = reader.readLine())!=null){
+            String[] line_split;
+            if(line.contains("), ")){
+                line_split = line.split("\\), ");
+            }else{
+                line_split = new String[1];
+                line_split[0] = line;
+            }
+            String query = "";
+            for(String p:line_split){
+                String[] p_splits = p.split("\\(");
+                query += p_splits[0] + "(";
+                String[] args_raw = p_splits[1].split(",");
+                for(int i=0;i<args_raw.length;i++){
+                    String arg = args_raw[i].replace(")", "").strip();
+                    if(arg.length()>1){
+                        try{
+                            arg = String.valueOf(entity2id.get(arg)-1);
+                        }
+                        catch(Exception e){
+                            throw new RuntimeException(e);
+                        }
+                    }
+                    query += arg;
+                    if(i!=args_raw.length-1){
+                        query += ",";
+                    }
+                }
+                query += "), ";
+            }
+            query = query.substring(0, query.length()-2);
+            queries[query_num] = query;
+            query_num++;
+        }
+        reader.close();
+        return Arrays.copyOf(queries, query_num);
+    }
+    public String[] loadLUBMQueries_map() throws Exception{
+        String query_file = "./LUBM_queries/conj_queries_map.sql";
+        BufferedReader reader = new BufferedReader(new FileReader(query_file));
+        String line;
+        String[] queries = new String[100];
+        int query_num = 0;
+        while((line = reader.readLine())!=null){
+            String[] line_split;
+            if(line.contains("), ")){
+                line_split = line.split("\\), ");
+            }else{
+                line_split = new String[1];
+                line_split[0] = line;
+            }
+            String query = "";
+            for(String p:line_split){
+                String[] p_splits = p.split("\\(");
+                query += p_splits[0] + "(";
+                String[] args_raw = p_splits[1].split(",");
+                for(int i=0;i<args_raw.length;i++){
+                    String arg = args_raw[i].replace(")", "").strip();
+                    query += arg;
+                    if(i!=args_raw.length-1){
+                        query += ",";
+                    }
+                }
+                query += "), ";
+            }
+            query = query.substring(0, query.length()-2);
+            queries[query_num] = query;
+            query_num++;
+        }
+        reader.close();
+        return Arrays.copyOf(queries, query_num);
+    }
+    public Pair<DBRule[], Long> runtime_rewrite(String query) throws Exception{
+        boolean timeout = false;
+        // Pair<DBRule[], Long> rewrite_pair = rewriter.rewrite_query(query_f);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        // 你的重写查询方法，返回一个 Pair<DBRule[], Long> 类型的结果
+        Callable<Pair<DBRule[], Long>> task = () -> {
+            // 调用 rewrite_query 方法
+            return rewriter.rewrite_query_runtime(query);
+        };
+        java.util.concurrent.Future<Pair<DBRule[], Long>> future = executor.submit(task);
+        Pair<DBRule[], Long> rewrite_pair = null;
+        try {
+            rewrite_pair = future.get(10L, java.util.concurrent.TimeUnit.SECONDS);
+            // 在这里使用 result
+        } catch (TimeoutException e) {  
+            System.out.println("Task timed out!");
+            future.cancel(true); // 强制取消任务
+            timeout = true;
+        } catch (InterruptedException | ExecutionException e) {
+            e.printStackTrace();
+        } finally {
+            executor.shutdown(); // 关闭线程池
+        }
+        if(timeout){
+            Monitor.setQueryINFO(query, "timeout\ttimeout\ttimeout\ttimeout\ttimeout");
+            return null;
+        }else{
+            return rewrite_pair;
+       }
+    }
+    public Predicate[] parseQuery(String query){
+        Vector<Predicate> predicates = new Vector<Predicate>();
+        String[] queries = query.split("\\),");
+        for(String p:queries){
+            String[] p_splits = p.split("\\(");
+            String rel_name = p_splits[0].strip();
+            Argument[] args = new Argument[2];
+            args[0] = new Argument(p_splits[1].split(",")[0].strip(), 0, 0);
+            args[1] = new Argument(p_splits[1].split(",")[1].replace(")", "").strip(), 0, 1);
+            predicates.add(new Predicate(rel_name, args));
+        }
+        return predicates.toArray(new Predicate[0]);
+    }
+    public String direct_rewrite_cte(Predicate[] predicates){
+        HashMap<String, String> relation2cte_map = new HashMap<String, String>();
+        String cte_clause = "";
+        HashSet<String> cte_names = new HashSet<String>();
+        for(int i=0;i<predicates.length;i++){
+            if(relation2cte.containsKey(predicates[i].functor)&&!cte_names.contains(predicates[i].functor)){
+                cte_clause += relation2cte.get(predicates[i].functor)+",";  
+                relation2cte_map.put(predicates[i].functor, predicates[i].functor+"_cte");
+                cte_names.add(predicates[i].functor);
+            }else{
+                relation2cte_map.put(predicates[i].functor, predicates[i].functor);
+            }
+        }
+        if(cte_clause.length()>0){
+            cte_clause = "WITH "+cte_clause;
+            cte_clause = cte_clause.substring(0, cte_clause.length()-1);
+            cte_clause += " SELECT ";
+            // get all the variables in the query
+        }else{
+            cte_clause = "SELECT ";
+        }
+        HashMap<String, int[]> vars = new HashMap<String, int[]>();
+        for(int i=0;i<predicates.length;i++){
+            for(int j=0;j<predicates[i].args.length;j++){
+                if(!predicates[i].args[j].isConstant){
+                    vars.put(predicates[i].args[j].name, new int[]{i, j});
+                }
+            }
+        }
+        for(Map.Entry<String, int[]> entry:vars.entrySet()){
+            cte_clause += predicates[entry.getValue()[0]].functor+"_"+(entry.getValue()[1]+1)+", ";
+        }
+        if(cte_clause.endsWith(", ")){
+            cte_clause = cte_clause.substring(0, cte_clause.length()-2);
+        }
+        cte_clause += " FROM ";
+        // construct the join keys
+        for(int i=0;i<predicates.length;i++){
+            cte_clause += relation2cte_map.get(predicates[i].functor)+", ";
+        }
+        if(cte_clause.endsWith(", ")){
+            cte_clause = cte_clause.substring(0, cte_clause.length()-2);
+        }
+        cte_clause += " WHERE ";
+        HashMap<String, List<int[]>> join_keys = new HashMap<String, List<int[]>>();
+        if(predicates.length>1){
+            for(int i=0;i<predicates.length;i++){
+                for(int j=0;j<predicates[i].args.length;j++){
+                    if(!predicates[i].args[j].isConstant){
+                        if(!join_keys.containsKey(predicates[i].args[j].name)){
+                            join_keys.put(predicates[i].args[j].name, new ArrayList<int[]>());
+                        }
+                        join_keys.get(predicates[i].args[j].name).add(new int[]{i, j});
+                    }
+                }
+            }
+        }
+        // 
+        for(Map.Entry<String, List<int[]>> entry:join_keys.entrySet()){
+            String key = entry.getKey();
+            List<int[]> values = entry.getValue();
+            if(values.size()>1){
+                String first_key = predicates[values.get(0)[0]].functor+"_"+(values.get(0)[1]+1);
+                for(int i=1;i<values.size();i++){
+                    cte_clause += first_key+" = "+predicates[values.get(i)[0]].functor+"_"+(values.get(i)[1]+1)+" AND ";
+                }
+            }
+        }
+        // if(cte_clause.endsWith(" AND ")){
+        //     cte_clause = cte_clause.substring(0, cte_clause.length()-5);
+        // }
+        for(int i=0;i<predicates.length;i++){
+            for(int j=0;j<predicates[i].args.length;j++){
+                if(predicates[i].args[j].isConstant){
+                    cte_clause += predicates[i].functor+"_"+(j+1)+" = "+predicates[i].args[j].name+" AND ";
+                }
+            }
+        }
+        if(cte_clause.endsWith(" AND ")){
+            cte_clause = cte_clause.substring(0, cte_clause.length()-5);
+        }
+        if(cte_clause.endsWith(" WHERE ")){
+            cte_clause = cte_clause.substring(0, cte_clause.length()-7);
+        }
+        return cte_clause;
+    }
+    public String[] loadTableQueries() throws Exception{
+        String[] string_queries = new String[relationMeta.size()];
+        int i = 0;
+        for(Vector<String> metaInfo: relationMeta){
+            String rel_name = metaInfo.get(0);
+            // String rule_query = table2query(rel_name);
+            string_queries[i] = rel_name+"(X, Y)";
+            i++;
+        }
+        return string_queries;
+    }
+    public String getQueryString(Predicate[] predicates, boolean single_var){
+        String query = "?(";
+        // get all the variables in the query
+        HashSet<String> vars = new HashSet<String>();
+        for(int i=0;i<predicates.length;i++){
+            for(int j=0;j<predicates[i].args.length;j++){
+                if(!predicates[i].args[j].isConstant){
+                    vars.add(predicates[i].args[j].name);
+                }
+            }
+        }
+        if(single_var&&predicates.length>1){
+            query += "X0";
+        }else{
+            int i = 0;
+            for(String var:vars){
+                query += var;
+                if(i!=vars.size()-1){
+                    query += ",";
+                }
+                i++;
+            }
+        }
+        query += ") :- ";
+        for(int j=0;j<predicates.length;j++){
+            query += predicates[j].toString();
+            if(j!=predicates.length-1){
+                query += ", ";
+            }
+        }
+        return query+".";
+        
+    }
 
-                    int[] table_ids = new int[1];
-                    table_ids[0] = 0;
-                    // for(int j=0;j<dbquery.body.size();j++){
-                    //     table_ids[j] = relation2id.get(dbquery.body.get(j).functor);
-                    // }
-                    int[] body_arity = new int[1];
-                    // for(int j=0;j<dbquery.body.size();j++){
-                    //     body_arity[j] = dbquery.body.get(j).args.length;
-                    // }
-                    body_arity[0] = 2;
-                    DBRule dbquery = new DBRule(rewrited_queries[0].toString().split(":-")[0]+" :- "+query_f.split(":-")[1], 0);
-                    String query_string = dbquery.rule2SQL(false, false);
-                    String[] string_queries = new String[rewrited_queries.length];
+    public ArrayTreeSet queryTuplesConcurrence(String[] queries, int threads) throws Exception{
+        
+        List<ArrayTreeSet> results = queryExecutor.executeQueriesConcurrently(queries,  rs_ -> {
+            ArrayTreeSet query_result = new ArrayTreeSet();
+            int[] reusable_tuple = new int[rs_.getMetaData().getColumnCount()];
+            while (rs_.next()) {
+                for (int j = 0; j < reusable_tuple.length; j++) {
+                    reusable_tuple[j] = rs_.getInt(j+1);
+                }
+                query_result.add(reusable_tuple.clone()); // 添加副本
+            }
+            return query_result;
+        }, threads);
+    
+        // 合并所有查询结果
+        ArrayTreeSet results_all = new ArrayTreeSet();
+        if(results==null){ 
+            return null;
+        }
+        for (ArrayTreeSet result : results) {
+            if(result==null){
+                return null;
+            }
+            results_all.addAll(result);
+        }
+    
+        return results_all;
+    }
+    public Pair<ArrayTreeSet, Long[]> queryTuplesSequential(String[] queries) throws Exception{
+        ArrayTreeSet results = new ArrayTreeSet();
+        Long[] times = new Long[queries.length];
+        for(int i=0;i<queries.length;i++){
+            String query = queries[i];
+            Long query_start_time = System.nanoTime();
+            ArrayTreeSet result = queryTuples(query);
+            if(result==null){
+                return null;
+            }
+            results.addAll(result);
+            Long query_end_time = System.nanoTime();
+            times[i] = query_end_time - query_start_time;
+        }
+        return new Pair<ArrayTreeSet, Long[] >(results, times);
+    }
+    public void executeQuery(String query) throws Exception{
+        queryExecutor.executeQuery(query);
+    }
+    public ArrayTreeSet queryTuples(String query) throws Exception{
+        ArrayTreeSet results = queryExecutor.executeQuerySingleThread(query, rs_ -> {
+            ArrayTreeSet rs = new ArrayTreeSet();
+            while(rs_.next()){
+                int[] tuple = new int[rs_.getMetaData().getColumnCount()];
+                for(int i=0;i<tuple.length;i++){
+                    tuple[i] = rs_.getInt(i+1);
+                }
+                rs.add(tuple);
+            }
+            return rs;
+        });
+        return results;
+    }
+    public ArrayTreeSet queryTuplesCTE(String query, int threads) throws Exception{
+        ArrayTreeSet results = queryExecutor.executeQuerySingleThreadCTE(query, rs_ -> {
+            ArrayTreeSet rs = new ArrayTreeSet();
+            while(rs_.next()){
+                int[] tuple = new int[rs_.getMetaData().getColumnCount()];
+                for(int i=0;i<tuple.length;i++){
+                    tuple[i] = rs_.getInt(i+1);
+                }
+                rs.add(tuple);
+            }
+            return rs;
+        }, threads);
+        return results;
+    }
+    public List<String[]> query_return_list(String query) throws Exception {
+        List<String[]> results = queryExecutor.executeQuerySingleThread(query, rs_ -> {
+            List<String[]> list = new ArrayList<>();
+            int colCount = rs_.getMetaData().getColumnCount();
+            while (rs_.next()) {
+                String[] row = new String[colCount];
+                for (int i = 0; i < colCount; i++) {
+                    row[i] = rs_.getString(i + 1);
+                }
+                list.add(row);
+            }
+            return list;
+        });
+        return results;
+    }
+    public void drop_temp_tables() throws Exception {
+        String queryListTempTables;
+        String dropSQLTemplate;
+    
+        if (db_type.equalsIgnoreCase("duckdb")) {
+            queryListTempTables = "SELECT table_name FROM information_schema.tables WHERE table_name LIKE '%cte'";
+            dropSQLTemplate = "DROP TABLE \"%s\"";
+        } else if (db_type.equalsIgnoreCase("pg")) {
+            queryListTempTables = "SELECT schemaname, tablename FROM pg_tables WHERE schemaname LIKE 'pg_temp%'";
+            dropSQLTemplate = "DROP TABLE IF EXISTS %s.%s CASCADE";
+        
+        } else {
+            throw new IllegalArgumentException("Unsupported db_type: " + db_type);
+        }
+    
+        List<String[]> tables = query_return_list(queryListTempTables);
+        if (tables == null || tables.isEmpty()) {
+            // System.out.println("No temporary tables to drop.");
+            return;
+        }
+    
+        for (String[] row : tables) {
+            String dropSQL;
+            if (db_type.equalsIgnoreCase("duckdb")) {
+                String tableName = row[0];
+                if (tableName != null && !tableName.isEmpty()) {
+                    dropSQL = String.format(dropSQLTemplate, tableName);
+                    // System.out.println("Dropping DuckDB temp table: " + tableName);
+                    queryExecutor.executeQuery(dropSQL);
+                }
+            } else {
+                if (row.length >= 2) {
+                    String schemaName = row[0];
+                    String tableName = row[1];
+                    if (schemaName != null && tableName != null) {
+                        dropSQL = String.format(dropSQLTemplate, schemaName, tableName);
+                        // System.out.println("Dropping PostgreSQL temp table: " + schemaName + "." + tableName);
+                        queryExecutor.executeQuery(dropSQL);
+                    }
+                }
+            }
+        }
+    }
+    public String getUnionQuery(String[] queries){
+        String union_query = "";
+        for(String query:queries){
+            union_query += "(" + query + ") UNION ";
+        }
+        union_query = union_query.substring(0, union_query.length()-7);
+        return union_query;
+    }
+    public void test_query(DatabaseManager origin_db, boolean validation, boolean decomp, Boolean cte) throws Exception{
+        test_query(origin_db, validation, decomp, cte, false);
+    }
+    public void test_query(DatabaseManager origin_db, boolean validation, boolean decomp, Boolean cte, boolean dump_specific) throws Exception{
+        long test_query_start = System.currentTimeMillis();
+        close_connection();
+        origin_db.close_connection();
+        if(validation){
+            // if((dbName.startsWith("LUBM")||dbName.startsWith("LUBM_compressed")) & bench){
+            //     queries = loadLUBMQueries();
+            // }else{
+            //     queries = loadTableQueries();
+            // }
+            String[] queries = loadGeneratedQueries("/NewData/mjh/KR/QC/QueryComp_1/datasets_csv/"+dbName.replace("_compressed", ""), false);
+            String[] queries_tests = loadGeneratedQueries("/NewData/mjh/KR/QC/QueryComp_1/datasets_csv/"+dbName.replace("_compressed", ""), true);
+            for(int i=0;i<queries.length;i++){
+                // drop_temp_tables(db_type);
+                // query type: single_origin, single_cte(how many threads), multi_rewrited, multi_cte(how many threads)
+                long rewrite_time = 0;
+                DBRule[] rewrited_queries=null;
+                String[] string_queries;
+                Predicate[] predicates = parseQuery(queries[i]);
+                boolean single_var = predicates.length>1;
+                String query_f = getQueryString(predicates, true);
+
+                DBRule r = new DBRule(query_f, 0);
+                String query_origin = "";
+
+                query_origin = r.rule2SQL(false, false, single_var);
+                // query_origin = r.rule2SQL(false, false);
+                // query_origin = r.rule2SQL(false, false);
+                // get all queries about to execute
+                String[] rewrite_query_cte_array=null;
+                long cte_rewrite_time=0;
+                if(cte){
+                // cte query
+                    long cte_rewrite_start = System.nanoTime();
+                    rewrite_query_cte_array = direct_rewrite_cte_materialized(predicates, db_type, single_var);
+                    long cte_rewrite_end = System.nanoTime();
+                    cte_rewrite_time = cte_rewrite_end - cte_rewrite_start;
+                    Monitor.cte_rewrite_time+=cte_rewrite_time;
+                } 
+                // rewrited queries
+                // if(!queries[i].contains("), ")){
+                if(false){
+                    String[] split_1 = queries[i].split("\\(");
+                    String rel_name = split_1[0];
+                    Argument[] args = new Argument[2];
+                    args[0] = new Argument(split_1[1].split(",")[0], 0, 0);
+                    args[1] = new Argument(split_1[1].split(",")[1].replace(")", ""), 0, 1);
+                    // get the argument
+                    long rewrite_start = System.nanoTime();
+                    string_queries = direct_rewrite_rule(rel_name, args);
+                    long rewrite_end = System.nanoTime();
+                    rewrite_time = rewrite_end - rewrite_start;
+                    }
+                else{
+                    Pair<DBRule[], Long> rewrite_pair = runtime_rewrite(query_f);
+                    if(rewrite_pair==null){
+                        continue;
+                    }
+                    rewrited_queries = rewrite_pair.getFirst();
+                    rewrite_time = rewrite_pair.getSecond();
+                    string_queries = new String[rewrited_queries.length];
                     for(int j=0;j<rewrited_queries.length;j++){
+                        // 检查是否只查询常量
+                        for(Argument arg : rewrited_queries[j].head.args){
+                            if(!arg.isConstant){
+                                break;
+                            }
+                        }
+                        // 当只查询常量时，直接使用rule2SQL
+                        string_queries[j] = rewrited_queries[j].rule2SQL(false, false, single_var);
+                    }
+                 }
+                Monitor.rewrite_time += rewrite_time;
+                // sequential query
+                clear_cache();
+                // origin query
+                origin_db.clear_cache();
+
+                long origin_time = origin_db.run_query_python(query_origin);
+                Monitor.origin_time += origin_time;
+                String union_query = getUnionQuery(string_queries);
+                // long union_time=0;
+                // // cte query
+                long[] cte_times = new long[3]; // [物化查询时间, 临时表创建时间, 主查询时间]
+                if(cte){
+                    if(!single_var){
+                        long cte_time = run_query_python(union_query);
+                        cte_times[0] = cte_time;
+                        Monitor.cte_0_time += cte_time;
+                    }else{
+                        cte_times = run_query_python_cte(rewrite_query_cte_array);
+                        Monitor.cte_0_time += cte_times[0];
+                        Monitor.cte_1_time += cte_times[1];
+                        Monitor.cte_2_time += cte_times[2];
+                    }
+                }
+                // union all
+                
+                long union_time = run_query_python(union_query);
+                Monitor.unionTime += union_time;
+
+                if(dump_specific){
+                    String info = "original query: "+(query_origin)+ ". original time: "+(origin_time)+"\r";
+                    info += "UCQ: "+(union_query)+"\r";
+                    info += "rewrite time: "+(rewrite_time)+"\r";
+                    info += "AQMAT rewrite time: "+(cte_rewrite_time)+"\r";
+                    info += "UCQ time: "+(union_time)+"\r";
+                    info += "AQMAT: "+(cte_times[0])+"\r";
+                    info += "AQMAT: "+(cte_times[1])+"\r";
+                    info += "AQMAT: "+(cte_times[2])+"\r";
+                    for(int j=0;j<rewrite_query_cte_array.length;j++){
+                        info += "AQMAT query: "+rewrite_query_cte_array[j]+"\r";
+                    }
+
+                    Monitor.dumpQueryInfo("q"+i+"_tr_"+string_queries.length+"_"+(origin_time), info);
+                }
+            }
+            for(int i=0;i<queries_tests.length;i++){
+                // drop_temp_tables(db_type);
+                // query type: single_origin, single_cte(how many threads), multi_rewrited, multi_cte(how many threads)
+                long rewrite_time = 0;
+                DBRule[] rewrited_queries=null;
+                String[] string_queries;
+                Predicate[] predicates = parseQuery(queries_tests[i]);
+                boolean single_var = predicates.length>1;
+                String query_f = getQueryString(predicates, true);
+
+                DBRule r = new DBRule(query_f, 0);
+                String query_origin = "";
+
+                query_origin = r.rule2SQL(false, false, single_var);
+                // query_origin = r.rule2SQL(false, false);
+                // query_origin = r.rule2SQL(false, false);
+                // get all queries about to execute
+                String[] rewrite_query_cte_array=null;
+                long cte_rewrite_time=0;
+                if(cte){
+                // cte query
+                    long cte_rewrite_start = System.nanoTime();
+                    rewrite_query_cte_array = direct_rewrite_cte_materialized(predicates, db_type, single_var);
+                    long cte_rewrite_end = System.nanoTime();
+                    cte_rewrite_time = cte_rewrite_end - cte_rewrite_start;
+                    Monitor.cte_rewrite_time+=cte_rewrite_time;
+                } 
+                // rewrited queries
+                // if(!queries[i].contains("), ")){
+                if(false){
+                    String[] split_1 = queries_tests[i].split("\\(");
+                    String rel_name = split_1[0];
+                    Argument[] args = new Argument[2];
+                    args[0] = new Argument(split_1[1].split(",")[0], 0, 0);
+                    args[1] = new Argument(split_1[1].split(",")[1].replace(")", ""), 0, 1);
+                    // get the argument
+                    long rewrite_start = System.nanoTime();
+                    string_queries = direct_rewrite_rule(rel_name, args);
+                    long rewrite_end = System.nanoTime();
+                    rewrite_time = rewrite_end - rewrite_start;
+                    }
+                else{
+                    Pair<DBRule[], Long> rewrite_pair = runtime_rewrite(query_f);
+                    if(rewrite_pair==null){
+                        continue;
+                    }
+                    rewrited_queries = rewrite_pair.getFirst();
+                    rewrite_time = rewrite_pair.getSecond();
+                    string_queries = new String[rewrited_queries.length];
+                    for(int j=0;j<rewrited_queries.length;j++){
+                        // 检查是否只查询常量
+                        for(Argument arg : rewrited_queries[j].head.args){
+                            if(!arg.isConstant){
+                                break;
+                            }
+                        }
+                        // 当只查询常量时，直接使用rule2SQL
                         string_queries[j] = rewrited_queries[j].rule2SQL(false, false);
                     }
-                    clear_cache();
-                    long start = System.nanoTime();
-                    // ArrayTreeSet single_result = directQuery(string_queries, body_arity, table_ids);
-                    ArrayTreeSet single_result = directQuery(string_queries, body_arity, table_ids);
-                    long direct_end = System.nanoTime();
-                    long[] concurrence_times = new long[test_threads.length];
+                 }
+                Monitor.test_rewriteTime += rewrite_time;
+                // sequential query
+                clear_cache();
+                // origin query
+                origin_db.clear_cache();
 
-                    ArrayTreeSet mult_result=new ArrayTreeSet();
-                    for (int j = 0; j < test_threads.length; j++) {
-                        clear_cache();
-                        int threads = test_threads[j];
-                        long concurrence_start = System.nanoTime();
-                        mult_result = directQueryConcurrence(string_queries, body_arity, table_ids, threads);
-                        long concurrence_end = System.nanoTime();
-                        concurrence_times[j] = concurrence_end - concurrence_start;
-                        Monitor.parallelQueryTime[j]+=concurrence_times[j];
-                    }
-                    // ArrayTreeSet mult_result = direct_queryTable_rewrite_time(query_f);
-                    origin_db.clear_cache();
-                    long origin_start = System.nanoTime();
-                    ArrayTreeSet origin_result = origin_db.directQueryOrigin(query_string ,body_arity, table_ids);
-                    // ArrayTreeSet origin_result = origin_db.directQueryConcurrence(new String[]{query_string}, body_arity, table_ids, 1);
-                    long origin_end = System.nanoTime();
-                    Monitor.singleQueryTime+=direct_end-start;
-                    
-                    Monitor.directQueryTime+=origin_end-origin_start;
-                    Monitor.rewriteTime+=rewrite_time;
-                    String concurrent_time_str = "";
-                    for(int j=0;j<test_threads.length;j++){
-                        concurrent_time_str += concurrence_times[j] + "\t";
-                    }
-                    Monitor.setQueryINFO(query_f, (direct_end-start)+"\t"+concurrent_time_str+"\t"+(origin_end-origin_start)+"\t"+(rewrite_time)+"\t"+(string_queries.length));
-                    // if(origin_result.size()!=singel_result.size()&&singel_result.size()!=origin_result.size()){ //!!!!! table_ids
-                    //     System.out.println("query: " + query + " is not equal");
-                    // }
-                    // if(origin_result.size()!=mult_result.size()&&mult_result.size()!=origin_result.size()){
-                    //     System.out.println("concurrent query table: " + query + " is not equal");
-                    // }
-                    // if(!(origin_result.containsAll(single_result)&&single_result.containsAll(origin_result))){ //!!!!! table_ids
-                    //     Monitor.logINFO("query: " + query_f + " is not equal");
-                    // }
-                    // if(!(origin_result.containsAll(mult_result)&&mult_result.containsAll(origin_result))){
-                    //     Monitor.logINFO("concurrent query table: " + query_f + " is not equal");
-                    // }
-                    if(!(origin_result.size() == single_result.size())){ //!!!!! table_ids
-                        Monitor.logINFO("query: " + query_f + " is not equal" + " "+single_result.size()+" "+ origin_result.size());
-                    }
-                    if(!(origin_result.size() == mult_result.size())){
-                        Monitor.logINFO("concurrent query table: " + query_f + " is not equal");
-                    }
-                    
-
-                    // Monitor.setQueryINFO(query, rewrite_size + " " + (direct_end-start) + " " + (concurrence_end-direct_end) + " " + (concurrence_end-direct_end) +" " + this_rewrite_time);
-                    // if(!(tuples.size() == origin_result.size())){
-                    //     System.out.println("query: " + query + " is not equal");
-                    // }
-                    // if(!tuples.equals(tuples_concurrence)){
-                    //     System.out.println("concurrent query: " + query + " is not equal");
-                    // }
-                    // confirm all the results are equal
-                    // if(!tuples_origin.equals(tuples_concurrence)){
-                    //     System.out.println("query: " + query + " is not equal");
-                    // }
-                    // if(!tuples_origin.equals(singel_result)){
-                    //     System.out.println("query: " + query + " is not equal");
-                    // }
-                }
-            }else{
-                for(Vector<String> metaInfo: relationMeta){
-                    String rel_name = metaInfo.get(0);
-                    String rule_query = table2query(rel_name);
-                    int[] body_arity = new int[1];
-                    body_arity[0] = 2;
-                    int[] tab_ids = new int[1];
-                    tab_ids[0] = relation2id.get(rel_name);
-                    
-                    // // open a file with the name of kb_name_query.txt and write the query result to the file
-                    // // Pair<DBRule[], Long> rewrite_pair = rewriter.rewrite_query(rule_query);
-                    // ExecutorService executor = Executors.newSingleThreadExecutor();
-                    // boolean timeout = false;
-                    // // 你的重写查询方法，返回一个 Pair<DBRule[], Long> 类型的结果
-                    // Callable<Pair<DBRule[], Long>> task = () -> {
-                    //     // 调用 rewrite_query 方法
-                    //     return rewriter.rewrite_query(rule_query);
-                    // };
-                    // java.util.concurrent.Future<Pair<DBRule[], Long>> future = executor.submit(task);
-                    // Pair<DBRule[], Long> rewrite_pair = null;
-                    // try {
-                    //     rewrite_pair = future.get(5L, java.util.concurrent.TimeUnit.SECONDS);
-                    //     // 在这里使用 result
-                    // } catch (TimeoutException e) {  
-                    //     System.out.println("Task timed out!");
-                    //     future.cancel(true); // 强制取消任务
-                    //     timeout = true;
-                    // } catch (InterruptedException | ExecutionException e) {
-                    //     e.printStackTrace();
-                    // } finally {
-                    //     executor.shutdown(); // 关闭线程池
-                    // }
-                    
-                    // if(timeout){
-                    //     Monitor.setQueryINFO(rule_query, "timeout\ttimeout\ttimeout\ttimeout\ttimeout");
-                    // }else{
-                    //     // if(rel_name.equals("category")){
-                    //     //     System.out.println("rewrite time: "+rewrite_pair.getSecond());
-                    //     // }
-                    long rewirte_start = System.nanoTime();
-                    String[] string_queries = direct_rewrite(rel_name, new Argument[]{new Argument("X",false,0,0), new Argument("Y",false,0,1)});
-                    long rewrite_end = System.nanoTime();
-                    if(true){
-
-                        // DBRule[] rewrite_Rule = rewrite_pair.getFirst();
-                        // String[] string_queries = new String[rewrite_Rule.length];
-                        // for(int j=0;j<rewrite_Rule.length;j++){
-                        //     string_queries[j] = rewrite_Rule[j].rule2SQL(false, false);
-                        // }
-                        // String origin_query_1 = "SELECT * FROM " + "\""+rel_name+"\"";
-                        long start = System.nanoTime();
-                        
-                        // ArrayTreeSet single_results = queryTable(string_queries, body_arity, tab_ids);
-                        // ArrayTreeSet single_results = queryTable(string_queries, body_arity, tab_ids);
-                        ArrayTreeSet single_results = queryTable(string_queries, body_arity, tab_ids);
-                        long query_end = System.nanoTime();
-                        ArrayTreeSet mult_result = new ArrayTreeSet();
-                        String concurrent_time_str = "";
-                        for (int j = 0; j < test_threads.length; j++) {
-                            clear_cache();
-                            int threads = test_threads[j];
-                            long concurrence_start = System.nanoTime();
-                            mult_result = queryTableConcurrence(string_queries, body_arity, tab_ids, threads);
-                            long concurrence_end = System.nanoTime();
-                            Monitor.parallelQueryTime[j]+=concurrence_end-concurrence_start;
-                            concurrent_time_str += (concurrence_end-concurrence_start) + "\t";
-                        }
-                        origin_db.clear_cache();
-                        String origin_query = "SELECT * FROM " + "\""+rel_name+"\"";
-                        long origin_start = System.nanoTime();
-                        ArrayTreeSet origin_result = origin_db.queryOrigin(origin_query, body_arity, tab_ids);
-                        // origin_db.queryOrigin("SELECT * FROM " + "\"group\"", new int[]{2}, new int[]{125})
-                        long origin_end = System.nanoTime();
-                        clear_cache();
-
-                        // long this_rewrite_time = queryTable_rewrite_time(rel_name);
-                        // write the rewrite_size, the origin query time, the query time the concurrence query time to the file
-                        // Monitor.setQueryINFO(rel_name, rewrite_size + " " + (query_end-start) + " " + (end-query_end) + " " + (concurrence_end-end) +" " + this_rewrite_time);
-                        // if time equals 0, then change it to 1;
-                        long single_time = query_end-start;
-                        long origin_time = origin_end-origin_start;
-                        if(single_time==0){
-                            single_time = 1;
-                        }
-                        if(origin_time==0){
-                            origin_time = 1;
-                        }
-                        Monitor.singleQueryTime+=single_time;
-                        Monitor.directQueryTime+=origin_time;
-                        // Monitor.rewriteTime+=rewrite_pair.getSecond();
-                        Monitor.rewriteTime+=rewrite_end-rewirte_start;
-                        
-                        // if((query_end-start)<(concurrence_end-end)){
-                        // System.out.println("single: "+single_time+" concurrent: "+concurrence_time+" origin: "+origin_time+" rewrite: "+rewrite_pair.getSecond()+" #queries: "+string_queries.length);
-                        // }
-                        // Monitor.setQueryINFO(rule_query, single_time+"\t"+concurrence_time+"\t"+origin_time+"\t"+(rewrite_pair.getSecond())+"\t"+(string_queries.length));
-                        // if(!(origin_result.containsAll(single_results)&&single_results.containsAll(origin_result))){ //!!!!! table_ids
-                        //     Monitor.logINFO("query: " + rel_name + " is not equal" + " "+single_results.size()+" "+ origin_result.size());
-                        // }
-                        // if(!(origin_result.containsAll(mult_result)&&mult_result.containsAll(origin_result))){
-                        //     Monitor.logINFO("concurrent query table: " + rel_name + " is not equal");
-                        // }
-                        //Monitor.setQueryINFO(rule_query, single_time+"\t"+concurrent_time_str+"\t"+origin_time+"\t"+(rewrite_pair.getSecond())+"\t"+(string_queries.length));
-                        Monitor.setQueryINFO(rule_query, single_time+"\t"+concurrent_time_str+"\t"+origin_time+"\t"+(rewrite_end-rewirte_start)+"\t"+(string_queries.length));
-                        if(!(origin_result.size() == single_results.size())){ //!!!!! table_ids
-                            Monitor.logINFO("query: " + rel_name + " is not equal" + " "+single_results.size()+" "+ origin_result.size());
-                        }
-                        if(!(origin_result.size() == mult_result.size())){
-                            Monitor.logINFO("concurrent query table: " + rel_name + " is not equal");
-                        }
+                long origin_time = origin_db.run_query_python(query_origin);
+                Monitor.test_originTime += origin_time;
+                // union all
+                String union_query = getUnionQuery(string_queries);
+                long union_time = run_query_python(union_query);
+                Monitor.test_unionTime += union_time;
+                // long union_time=0;
+                // // cte query
+                long[] cte_times = new long[3]; // [物化查询时间, 临时表创建时间, 主查询时间]
+                if(cte){
+                    if(!single_var){
+                        long cte_time = run_query_python(union_query);
+                        cte_times[0] = cte_time;
+                        Monitor.cte_0_time += cte_time;
+                    }else{
+                        cte_times = run_query_python_cte(rewrite_query_cte_array);
+                        Monitor.cte_0_time += cte_times[0];
+                        Monitor.cte_1_time += cte_times[1];
+                        Monitor.cte_2_time += cte_times[2];
                     }
                 }
-                
+                if(dump_specific){
+                    String info = "original query: "+(query_origin)+ ". original time: "+(origin_time)+"\r";
+                    info += "UCQ: "+(union_query)+"\r";
+                    info += "rewrite time: "+(rewrite_time)+"\r";
+                    info += "AQMAT rewrite time: "+(cte_rewrite_time)+"\r";
+                    info += "UCQ time: "+(union_time)+"\r";
+                    info += "AQMAT: "+(cte_times[0])+"\r";
+                    info += "AQMAT: "+(cte_times[1])+"\r";
+                    info += "AQMAT: "+(cte_times[2])+"\r";
+                    for(int j=0;j<rewrite_query_cte_array.length;j++){
+                        info += "AQMAT query: "+rewrite_query_cte_array[j]+"\r";
+                    }
 
-                // if(!(origin_result.containsAll(singel_result)&&singel_result.containsAll(origin_result))){
-                //     System.out.println("table: " + rel_name + " is not equal");
-                //     ArrayTreeSet r = queryTable(rel_name);
-                // }
-                // if(!(origin_result.containsAll(mult_result)&&mult_result.containsAll(origin_result))){
-                //     System.out.println("concurrent query table: " + rel_name + " is not equal");
-                // }
-
-                // // results.add(tuples);
-                // // origin_results.add(tuples_origin);
-                // if(!tuples.equals(tuples_origin)){
-                //     System.out.println("table: " + rel_name + " is not equal");
-                //     // write the tuples to the file ./rel.csv
-                //     FileWriter entityWriter = new FileWriter("./rel.csv");
-                //     for(DBTuple tuple:tuples){
-                //         entityWriter.write(tuple.toString() + "\n");
-                //     }
-                //     System.exit(0);
-                // }
-                // if(!tuples.equals(tuples_concurrence)){
-                //     System.out.println("concurrent query table: " + rel_name + " is not equal");
-                //     // write the tuples to the file ./rel.csv
-                //     // FileWriter entityWriter = new FileWriter("./rel.csv");
-                //     // for(DBTuple tuple:tuples){
-                //     //     entityWriter.write(tuple.toString() + "\n");
-                //     // }
-                // }
+                    Monitor.dumpQueryInfo("q"+i+"_te_"+string_queries.length+"_"+(origin_time), info);
+                }
             }
-
         }
-        // System.out.println("query time: " + query_time + "ms");
-        // System.out.println("origin time: " + origin_time + "ms");
-        // System.out.println("concurrent time: " + concurrent_time + "ms");
-
+        long test_query_end = System.currentTimeMillis();
+        Monitor.logINFO("[]test query time: "+(test_query_end - test_query_start));
+        recover_connection();
+        origin_db.recover_connection();
         // -----
         if(decomp){
-            // DBRule[] dbruleSet = new DBRule[rules.length];
-            // for(int i=0;i<rules.length;i++){
-            //     dbruleSet[i] = new DBRule(rules[i], i);
-            // }
-            // deleteAsistantColumns();
-            // System.out.println("rewrite time: " + rewrite_time + "ms");
-            // System.out.println("infer time: " + infer_time + "ms");
-            
             long recover_start = System.currentTimeMillis();
             tryRecoverDB(rules, origin_db);
             long recover_end = System.currentTimeMillis();
@@ -943,12 +1755,7 @@ public class DatabaseManager {
             for(Vector<String> metaInfo: relationMeta){
                 String rel_name = metaInfo.get(0);
                 String rel_name_sql = "\""+rel_name+"\"";
-                // int num = queryExecutor.executeQuerySingleThread("SELECT COUNT(*) as num FROM " + rel_name_sql, rs_ -> {
-                //     int n;
-                //     rs_.next();
-                //     n = rs_.getInt("num");
-                //     return n;
-                // });
+
                 int num = countRecords(rel_name);
                 int num_2 = origin_db.countRecords(rel_name);
                 if(num!=num_2){
@@ -964,22 +1771,178 @@ public class DatabaseManager {
                 Monitor.logINFO("recover validation failed");
                 System.out.println("recover validation failed");
             }
+            Monitor.logINFO("recover time: " + (System.currentTimeMillis() - recover_start) + "ms");
             System.out.println("recover time: " + (System.currentTimeMillis() - recover_start) + "ms");
         }
+        long end_time = System.currentTimeMillis();
+        Monitor.logINFO("test query time: "+(end_time - test_query_end));
+    }
+    public void test_query_union() throws Exception{
+        System.currentTimeMillis();
+        close_connection();
+        // if((dbName.startsWith("LUBM")||dbName.startsWith("LUBM_compressed")) & bench){
+        //     queries = loadLUBMQueries();
+        // }else{
+        //     queries = loadTableQueries();
+        // }
+        String[] queries = loadGeneratedQueries("/NewData/mjh/KR/QC/QueryComp_1/datasets_csv/"+dbName.replace("_compressed", ""), false);
+        for(int i=0;i<queries.length;i++){
+            // drop_temp_tables(db_type);
+            // query type: single_origin, single_cte(how many threads), multi_rewrited, multi_cte(how many threads)
+            long rewrite_time = 0;
+            DBRule[] rewrited_queries=null;
+            String[] string_queries;
+            Predicate[] predicates = parseQuery(queries[i]);
+            boolean single_var = predicates.length>1;
+            String query_f = getQueryString(predicates, true);
+
+            DBRule r = new DBRule(query_f, 0);
+
+            r.rule2SQL(false, false, single_var);
+            // query_origin = r.rule2SQL(false, false);
+            // query_origin = r.rule2SQL(false, false);
+            // get all queries about to execute
+            // rewrited queries
+            // if(!queries[i].contains("), ")){
+
+            Pair<DBRule[], Long> rewrite_pair = runtime_rewrite(query_f);
+            if(rewrite_pair==null){
+                continue;
+            }
+            rewrited_queries = rewrite_pair.getFirst();
+            rewrite_time = rewrite_pair.getSecond();
+            string_queries = new String[rewrited_queries.length];
+            for(int j=0;j<rewrited_queries.length;j++){
+                // 检查是否只查询常量
+                for(Argument arg : rewrited_queries[j].head.args){
+                    if(!arg.isConstant){
+                        break;
+                    }
+                }
+                // 当只查询常量时，直接使用rule2SQL
+                string_queries[j] = rewrited_queries[j].rule2SQL(false, false, single_var);
+            }
+            Monitor.rewrite_time += rewrite_time;
+            // sequential query
+            clear_cache();
+            // origin query
+
+            // union all
+            String union_query = getUnionQuery(string_queries);
+            long union_time = run_query_python(union_query);
+            Monitor.unionTime += union_time;
+        }
+        recover_connection();
+    }
+    public void test_query_simple() throws Exception{
+        long test_query_start = System.currentTimeMillis();
+        close_connection();
+        // if((dbName.startsWith("LUBM")||dbName.startsWith("LUBM_compressed")) & bench){
+        //     queries = loadLUBMQueries();
+        // }else{
+        //     queries = loadTableQueries();
+        // }
+        String[] queries = loadGeneratedQueries("/NewData/mjh/KR/QC/QueryComp_1/datasets_csv/"+dbName.replace("_compressed", ""), false);
+        String[] queries_tests = loadGeneratedQueries("/NewData/mjh/KR/QC/QueryComp_1/datasets_csv/"+dbName.replace("_compressed", ""), true);
+        for(int i=0;i<queries.length;i++){
+            // drop_temp_tables(db_type);
+            // query type: single_origin, single_cte(how many threads), multi_rewrited, multi_cte(how many threads)
+            long rewrite_time = 0;
+            DBRule[] rewrited_queries=null;
+            String[] string_queries;
+            Predicate[] predicates = parseQuery(queries[i]);
+            boolean single_var = predicates.length>1;
+            String query_f = getQueryString(predicates, true);
+            // rewrited queries
+            if(false){
+                String[] split_1 = queries[i].split("\\(");
+                String rel_name = split_1[0];
+                Argument[] args = new Argument[2];
+                args[0] = new Argument(split_1[1].split(",")[0], 0, 0);
+                args[1] = new Argument(split_1[1].split(",")[1].replace(")", ""), 0, 1);
+                // get the argument
+                long rewrite_start = System.nanoTime();
+                string_queries = direct_rewrite_rule(rel_name, args);
+                long rewrite_end = System.nanoTime();
+                rewrite_time = rewrite_end - rewrite_start;
+                }
+            else{
+                Pair<DBRule[], Long> rewrite_pair = runtime_rewrite(query_f);
+                if(rewrite_pair==null){
+                    continue;
+                }
+                rewrited_queries = rewrite_pair.getFirst();
+                rewrite_time = rewrite_pair.getSecond();
+                string_queries = new String[rewrited_queries.length];
+                for(int j=0;j<rewrited_queries.length;j++){
+                    // 检查是否只查询常量
+                    for(Argument arg : rewrited_queries[j].head.args){
+                        if(!arg.isConstant){
+                            break;
+                        }
+                    }
+                    // 当只查询常量时，直接使用rule2SQL
+                    string_queries[j] = rewrited_queries[j].rule2SQL(false, false, single_var);
+                }
+                }
+            Monitor.rewrite_time += rewrite_time;
+            // union all
+            String union_query = getUnionQuery(string_queries);
+            long union_time = run_query_python(union_query);
+            Monitor.unionTime += union_time;
+        }
+        for(int i=0;i<queries_tests.length;i++){
+            // drop_temp_tables(db_type);
+            // query type: single_origin, single_cte(how many threads), multi_rewrited, multi_cte(how many threads)
+            long rewrite_time = 0;
+            DBRule[] rewrited_queries=null;
+            String[] string_queries;
+            Predicate[] predicates = parseQuery(queries_tests[i]);
+            boolean single_var = predicates.length>1;
+            String query_f = getQueryString(predicates, true);
+            // rewrited queries
+            if(false){
+                String[] split_1 = queries_tests[i].split("\\(");
+                String rel_name = split_1[0];
+                Argument[] args = new Argument[2];
+                args[0] = new Argument(split_1[1].split(",")[0], 0, 0);
+                args[1] = new Argument(split_1[1].split(",")[1].replace(")", ""), 0, 1);
+                // get the argument
+                long rewrite_start = System.nanoTime();
+                string_queries = direct_rewrite_rule(rel_name, args);
+                long rewrite_end = System.nanoTime();
+                rewrite_time = rewrite_end - rewrite_start;
+                }
+            else{
+                Pair<DBRule[], Long> rewrite_pair = runtime_rewrite(query_f);
+                if(rewrite_pair==null){
+                    continue;
+                }
+                rewrited_queries = rewrite_pair.getFirst();
+                rewrite_time = rewrite_pair.getSecond();
+                string_queries = new String[rewrited_queries.length];
+                for(int j=0;j<rewrited_queries.length;j++){
+                    // 检查是否只查询常量
+                    for(Argument arg : rewrited_queries[j].head.args){
+                        if(!arg.isConstant){
+                            break;
+                        }
+                    }
+                    // 当只查询常量时，直接使用rule2SQL
+                    string_queries[j] = rewrited_queries[j].rule2SQL(false, false, single_var);
+                }
+                }
+            Monitor.test_rewriteTime += rewrite_time;
+            // union all
+            String union_query = getUnionQuery(string_queries);
+            long union_time = run_query_python(union_query);
+            Monitor.test_unionTime += union_time;
+        }
+        long test_query_end = System.currentTimeMillis();
+        Monitor.logINFO("[]test query time: "+(test_query_end - test_query_start));
+        recover_connection();
     }
 
-    public long analyze_query_time(String query, int[] arity,int[] table_ids) throws Exception{
-        long start = System.nanoTime();
-        ArrayTreeSet all_result = querySingle(query, arity, table_ids);
-        long end = System.nanoTime();
-        return end-start;
-    }
-    public long analyze_query_time_conc(String[] queries, int[] arity,int[] table_ids) throws Exception{
-        long start = System.nanoTime();
-        ArrayTreeSet all_result = queryTableConcurrence(queries, arity, table_ids);
-        long end = System.nanoTime();
-        return end-start;
-    }
     public ArrayTreeSet query_origin(String table_name) throws Exception{
         int arity = Integer.parseInt(relationMeta.get(relation2id.get(table_name)).get(1));
         String query = "SELECT * FROM " + table_name;
@@ -1010,113 +1973,6 @@ public class DatabaseManager {
             columns[i] = rsmd.getColumnName(i+1);
         }
         return columns;
-    }
-    public ArrayTreeSet query_concurrence(String[] queries, int[] arity, int[] table_id, int threads) throws Exception {
-        // 并行执行查询
-
-        List<ArrayTreeSet> results = queryExecutor.executeQueriesConcurrently(queries,  rs_ -> {
-            ArrayTreeSet query_result = new ArrayTreeSet();
-            // ResultSetMetaData metaData = rs_.getMetaData();
-            // int columnCount = metaData.getColumnCount();
-            int[] reusable_tuple = new int[arity[0]+1];
-            while (rs_.next()) {
-                // for(int i=0; i<arity.length;i++){
-                // int[] reusable_tuple = new int[arity[0]+1];
-                for (int j = 0; j < arity[0]; j++) {
-                    reusable_tuple[j] = rs_.getInt(j+1);
-                }
-                reusable_tuple[arity[0]] = table_id[0]; // 如果需要映射，可使用 relation2id.get(table_id)
-                query_result.add(reusable_tuple.clone()); // 添加副本
-                //}
-            }
-            return query_result;
-        }, threads);
-    
-        // 合并所有查询结果
-        ArrayTreeSet results_all = new ArrayTreeSet();
-        for (ArrayTreeSet result : results) {
-            results_all.addAll(result);
-        }
-    
-        return results_all;
-    }
-
-    public ArrayTreeSet query_concurrence(String[] queries, int[] arity, int[] table_id) throws Exception {
-        // 并行执行查询
-
-        List<ArrayTreeSet> results = queryExecutor.executeQueriesConcurrently(queries,  rs_ -> {
-            ArrayTreeSet query_result = new ArrayTreeSet();
-            // ResultSetMetaData metaData = rs_.getMetaData();
-            // int columnCount = metaData.getColumnCount();
-            int[] reusable_tuple = new int[arity[0]+1];
-            while (rs_.next()) {
-                // for(int i=0; i<arity.length;i++){
-                // int[] reusable_tuple = new int[arity[0]+1];
-                for (int j = 0; j < arity[0]; j++) {
-                    reusable_tuple[j] = rs_.getInt(j+1);
-                }
-                reusable_tuple[arity[0]] = table_id[0]; // 如果需要映射，可使用 relation2id.get(table_id)
-                query_result.add(reusable_tuple.clone()); // 添加副本
-                //}
-            }
-            return query_result;
-        });
-    
-        // 合并所有查询结果
-        ArrayTreeSet results_all = new ArrayTreeSet();
-        for (ArrayTreeSet result : results) {
-            results_all.addAll(result);
-        }
-    
-        return results_all;
-    }
-    public ArrayTreeSet query(String[] rewrite_queries, int[] body_arity, int[] tab_ids) throws Exception{
-        //query.rule2SQL(false, false)
-        ArrayTreeSet all_result = new ArrayTreeSet();
-        for(String query:rewrite_queries){
-            // long start = System.currentTimeMillis();
-            try{
-            ArrayTreeSet result = queryExecutor.executeQuerySingleThread(query, rs_ -> {
-                ArrayTreeSet query_result = new ArrayTreeSet();
-                
-                int[] reusable_tuple = new int[body_arity[0]+1];
-                while(rs_.next()){
-                    for(int j=0;j<body_arity[0]; j++){
-                        reusable_tuple[j]= rs_.getInt(j+1);
-                        
-                        
-                    }
-                    reusable_tuple[body_arity[0]] = tab_ids[0];
-                    query_result.add(reusable_tuple.clone());
-                }
-                return query_result;
-            });
-            // long end = System.currentTimeMillis();
-            // System.out.print("single query time: " + (end-start) + "ms ");
-            all_result.addAll(result);
-        }catch(Exception e){
-            throw new RuntimeException(e);
-        }
-        }
-        return all_result;
-    }
-    public ArrayTreeSet directQuery(String[] rewrited_queries, int[] body_arity, int[] tab_ids) throws Exception{
-        // not need to convert the rel name to query
-        
-        return query(rewrited_queries, body_arity, tab_ids);
-    }
-    public ArrayTreeSet directQueryConcurrence(String[] query, int[] body_arity, int[] tab_ids, int threads) throws Exception{
-        // DBRule[] rewrited_queries = rewriter.rewrite_query(query);
-        // String[] query_strs = new String[rewrited_queries.length];
-        // int arity = rewrited_queries[0].head.args.length;
-        // int table_id = relation2id.get(rewrited_queries[0].head.functor);
-        // for(int i=0;i<rewrited_queries.length;i++){
-        //     query_strs[i] = rewrited_queries[i].rule2SQL(false, false);
-        // }
-        return query_concurrence(query, body_arity, tab_ids, threads);
-    }
-    public ArrayTreeSet directQueryConcurrence(String[] query, int[] body_arity, int[] tab_ids) throws Exception{
-        return query_concurrence(query, body_arity, tab_ids);
     }
 
     public void dumpRules(String rule_path, String out_dir){
@@ -1239,75 +2095,6 @@ public class DatabaseManager {
             e.printStackTrace();
         }
     }
-    public ArrayTreeSet queryTableConcurrence(String[] queries_string, int[] body_arity, int[] table_ids, int threads) throws Exception{
-        // String rule_query = table2query(table_name);
-        // DBRule[] rewrite_rules = rewriter.rewrite_query(rule_query);
-        // // System.out.println("query time: " + (System.currentTimeMillis() - start) + "ms");
-        // String[] query_strs = new String[rewrite_rules.length];
-        // int arity = rewrite_rules[0].head.args.length;
-        // int table_id = relation2id.get(rewrite_rules[0].head.functor);
-        // for(int i=0;i<rewrite_rules.length;i++){
-        //     query_strs[i] = rewrite_rules[i].rule2SQL(false, false);
-        // }
-        // ArrayTreeSet result_all = 
-        if(queries_string.length==1){
-            return querySingle(queries_string[0], body_arity, table_ids);
-        }
-        return query_concurrence(queries_string, body_arity, table_ids, threads);
-    }
-    public ArrayTreeSet queryTableConcurrence(String[] queries_string, int[] body_arity, int[] table_ids) throws Exception{
-        // String rule_query = table2query(table_name);
-        // DBRule[] rewrite_rules = rewriter.rewrite_query(rule_query);
-        // // System.out.println("query time: " + (System.currentTimeMillis() - start) + "ms");
-        // String[] query_strs = new String[rewrite_rules.length];
-        // int arity = rewrite_rules[0].head.args.length;
-        // int table_id = relation2id.get(rewrite_rules[0].head.functor);
-        // for(int i=0;i<rewrite_rules.length;i++){
-        //     query_strs[i] = rewrite_rules[i].rule2SQL(false, false);
-        // }
-        // ArrayTreeSet result_all = 
-        if(queries_string.length==1){
-            return querySingle(queries_string[0], body_arity, table_ids);
-        }
-        return query_concurrence(queries_string, body_arity, table_ids);
-    }
-    public ArrayTreeSet directQueryOrigin(String query_string, int[] body_arity, int[] table_ids) throws Exception{
-        return querySingle(query_string, body_arity, table_ids);
-    }
-    public ArrayTreeSet queryOrigin(String query, int[] body_arity, int[] tab_ids) throws Exception{
-        return querySingle(query, body_arity, tab_ids);
-    }
-    public ArrayTreeSet querySingle(String query, int[] arity,int[] table_ids) throws Exception{
-        ArrayTreeSet result = queryExecutor.executeQuerySingleThread(query, rs->{
-            ArrayTreeSet out = new ArrayTreeSet();
-            ResultSetMetaData metaData = rs.getMetaData();
-            int columnCount = metaData.getColumnCount();
-            // int ari = 0;
-            // if(columnCount<arity[0]){
-            //     ari = columnCount;
-            // }else{
-            //     ari = arity[0];
-            // }
-            while(rs.next()){
-                // for(int i=0;i<arity.length;i++){
-                int[] tuple = new int[columnCount+1];
-                for(int j=0;j<columnCount; j++){
-                    try{
-                        tuple[j]= rs.getInt(j+1);
-                    }catch(Exception e){
-                        System.out.println(query);
-                        throw new RuntimeException(e);
-                    }
-                    
-                };
-                tuple[columnCount] = table_ids[0];
-                out.add(tuple.clone());
-                //}
-            }
-            return out;
-        });
-        return result;
-    }
     public String table2query(String table_name){
         String rule_query = "?(";
         int arity = Integer.parseInt(relationMeta.get(relation2id.get(table_name)).get(1));
@@ -1346,17 +2133,6 @@ public class DatabaseManager {
         rule_query += ").";
         return rule_query;
     }
-    public ArrayTreeSet queryTable(String[] rewrite_queries, int[] body_arity, int[] tab_ids) throws Exception{
-        // String rule_query = table2query(table_name);
-        // long start = System.currentTimeMillis();
-        // DBRule[] rewrited_queries = rewriter.rewrite_query(rule_query);
-        // long rewrite_end = System.currentTimeMillis();
-        // Monitor.rewriteTime += rewrite_end-start;
-        // // System.out.println("query time: " + (System.currentTimeMillis() - start) + "ms");
-        // ArrayTreeSet result = ;
-        // return result;
-        return query(rewrite_queries, body_arity, tab_ids);
-    }
     public long queryTable_rewrite_time(String table_name) throws ParseException{
         long start = System.currentTimeMillis();
         DBRule[] rewrited_queries = rewriter.rewrite_all(table_name);
@@ -1371,8 +2147,73 @@ public class DatabaseManager {
     //     Monitor.rewriteTime += rewrite_end-start;
     //     return rewrite_end-start;
     // }
+    
+    public int checkRuleNeg_supp_sql(DBRule rule) throws Exception{
+        int has_Neg = queryExecutor.executeQuerySingleThread1Line(rule.rule2SQL_Neg());
+        if(has_Neg<1){
+            return -1;
+        }
+        int supp = queryExecutor.executeQuerySingleThread(rule.rule2SQL_supp(), rs_ -> {
+            int count = 0;
+            while(rs_.next()){
+                count++;
+            }
+            return count;
+        });
+        return supp;
+    }
+    public int checkRuleNeg_supp(DBRule rule) throws Exception{
+        int table_id = relation2id.get(rule.head.functor);
+        int arity = rule.head.args.length;
+        int[] query_info = new int[2];
+        query_info[0] = table_id;
+        query_info[1] = arity;
+        ArrayTreeSet infered;
+        try{        
+            infered = queryExecutor.executeQuerySingleThread(rule.rule2SQL(false, false), rs_ -> {
+            ArrayTreeSet rule_infer = new ArrayTreeSet();
+            int[] reusable_tuple = new int[query_info[1]+1];
+            while(rs_.next()){
+                for(int j=0;j<query_info[1]; j++){
+                    try{
+                        reusable_tuple[j]= rs_.getInt(j+1);
+                    }catch(Exception e){
+                        // System.out.println(rule.rule2SQL(false, false));
+                        // throw new RuntimeException(e);
+                        return null;
+                    }
+                    // rule: telephone(X,Y) :- t(X,Z), t(A,Z), telephone(A,Y)
+                    // sql: select t_1.t_1, telephone_dup_2.telephone_2 
+                    // from telephone as telephone_dup_2, t, t as t_dup_2
+                    // where t.t_1 = t_dup_2.t_1 and t_dup_2.t_2 = telephone_dup_2.telephone_2 
+                    // and not exists (select * from telephone where telephone.telephone_1 = t_dup_2.t_1
+                    // and telephone.telephone_2 = telephone_dup_2.telephone_2) limit 1;
 
+                    // rule: telephone(X,Y) :- t(X,Z), t(A,Z), telephone(A,Y)"
+                    // sql: select distinct t_1.t_1, tp_2.telephone_2 from telephone, telephone as telephone_dup_2, t, t as t_dup_2
+                    //  where telephone.telephone_1 = t.t_1 and telephone.telephone_2 = telephone_dup_2.telephone_2
+                    //  and t.t_2 = t_dup_2.t_2 and t_dup_2.t_1 = telephone_dup_2.telephone_1;
+                }
+                reusable_tuple[query_info[1]] = query_info[0];
+                rule_infer.add(reusable_tuple.clone());
+            }
+            return rule_infer;
+        }
+        );
+        }catch(Exception e){
+            return -1; 
+        }
 
+        if(infered==null){ // query timeout, quit the rule
+            return -1;
+        }
+        ArrayTreeSet head_data = getHeadTable(rule, false);
+        if(head_data.containsAll(infered)){
+            return infered.size();
+        }else{
+            return -1;
+        }
+    }
     public boolean checkRuleNeg(DBRule rule) throws Exception{
         int table_id = relation2id.get(rule.head.functor);
         int arity = rule.head.args.length;
@@ -1423,6 +2264,7 @@ public class DatabaseManager {
     // }
 
     public boolean checkRuleEntailment_rule(DBRule rule_, DBRule back_rule_){
+        // if rule_ is subsumed by back_rule_, return true
         DBRule rule = rule_.clone();
         DBRule back_rule = back_rule_.clone();
         List<Argument[]> rule_body = new ArrayList<Argument[]>();
@@ -1503,7 +2345,16 @@ public class DatabaseManager {
             return false;
         }
     }
-    public boolean checkRulesEntailment_rule_wo_replace(DatabaseManager db, List<DBRule> rule_set, DBRule rule, RuleSet ruleSet, fr.lirmm.graphik.graal.api.core.Rule fr_rule) throws Exception{
+    public int checkRulesSubsumedEach(DBRule rule, DBRule rule2) throws Exception{
+        if(checkRuleEntailment_rule(rule, rule2)){
+            return 1; // remove rule1
+        }
+        if(checkRuleEntailment_rule(rule2, rule)){
+            return -1; // remove rule2
+        }
+        return 0;
+    }
+    public boolean checkRulesEntailment_rule_wo_replace(List<DBRule> rule_set, DBRule rule, RuleSet ruleSet, fr.lirmm.graphik.graal.api.core.Rule fr_rule) throws Exception{
         if(rule_set.isEmpty()){
             return false;
         }
@@ -1512,7 +2363,7 @@ public class DatabaseManager {
             if(!fr_iter.hasNext()){
                 break;
             }
-            fr.lirmm.graphik.graal.api.core.Rule this_fr = fr_iter.next();
+            fr_iter.next();
             // if the head predicate is not equal, then continue
             if(!back_rule.head.functor.equals(rule.head.functor)){
                 continue;
@@ -1738,7 +2589,7 @@ public class DatabaseManager {
         // rule_rewrited = Arrays.copyOfRange(rule_rewrited, 1, rule_rewrited.length);
         // -------------------rewrite the rule-------------------
 
-        DBRule[] rule_rewrited = direct_rewrite_rule(table_name, new Argument[]{new Argument(tuple[0], tuple[2], 0), new Argument(tuple[1], tuple[0], 1)});
+        DBRule[] rule_rewrited = direct_rewrite_rule_dbrule(table_name, new Argument[]{new Argument(tuple[0], tuple[2], 0), new Argument(tuple[1], tuple[0], 1)});
         rule_rewrited = Arrays.copyOfRange(rule_rewrited, 1, rule_rewrited.length);
         String[] queries = new String[rule_rewrited.length];
         QueryInfo[] queryInfos = new QueryInfo[queries.length];
@@ -1781,7 +2632,6 @@ public class DatabaseManager {
             return false;
         });
         long q_e = System.currentTimeMillis();
-        Monitor.tmp += (q_e - q_s);
         for(boolean d: deletables){
             if(d){
                 return true;
@@ -1982,144 +2832,8 @@ public class DatabaseManager {
         }
         return tuples;
     }
-    public Pair<DBRule[], ArrayTreeSet> selectRulesTuplesConcurrent_1(DBRule[] rule_set, Boolean head, ArrayTreeSet deleted) throws Exception{
-        /*
-         * get the rule infered tuples and check whether it in deleted
-         */
-        // HashSet<DBRule> empty_head_rules = new HashSet<DBRule>();
-        ArrayTreeSet tuples = new ArrayTreeSet();
-        String[] queries = new String[rule_set.length];
-        QueryInfo[] queries_infos = new QueryInfo[rule_set.length];
-        for(int i=0;i<rule_set.length;i++){
-            DBRule rule = rule_set[i];  
-            queries[i] = rule.ruleHead2SQL_Set();
-            QueryInfo queries_info = new QueryInfo();
-            queries_info.rule_query = rule_set[i].toString();
-            queries_info.headFucID = relation2id.get(rule.head.functor);
-            queries_info.headArity = rule.head.args.length;
-            queries_info.bodyArities = new int[rule.body.size()];
-            queries_info.bodySize = rule.body.size();
-            for(int j=0;j<rule.body.size();j++){
-                queries_info.bodyArities[j] = rule.body.get(j).args.length;
-            }
-            queries_info.bodyFucIDs = new int[rule.body.size()];
-            for(int k=0;k<rule.body.size();k++){
-                queries_info.bodyFucIDs[k] = relation2id.get(rule.body.get(k).functor);
-            }
-            queries_infos[i] = queries_info;
-        }
-        Pair<List<ArrayTreeSet>, List<Integer>> infers = queryExecutor.executeQueriesWithInfoWithEmptyID(queries, queries_infos, (rs_, qi) -> {
-            ArrayTreeSet out = new ArrayTreeSet();
-            boolean flag = false;
-            int head_arity = qi.headArity;
-            int head_functor_id = qi.headFucID;
-            int[] reuseable_head_tuple = new int[head_arity+1];
-            
-            while(rs_.next()){
-                int c = 1;
-                for(int j=0;j<head_arity; j++){
-                    reuseable_head_tuple[j] = rs_.getInt(c++);
-                }
-                reuseable_head_tuple[head_arity] = head_functor_id;
-                if(deleted.contains(reuseable_head_tuple)){
-                    continue;
-                }
-                ArrayTreeSet body_tuple_set = new ArrayTreeSet();
-                for(int i=0;i<qi.bodySize;i++){
-                    int body_arity = qi.bodyArities[i];
-                    int[] body_tuple = new int[body_arity+1];
-                    for(int j=0;j<body_arity; j++){
-                        body_tuple[j] = rs_.getInt(c++);
-                    }
-                    body_tuple[body_arity] = qi.bodyFucIDs[i];
-                    if(deleted.contains(body_tuple)){
-                        flag = true;
-                        break;
-                    }
-                    body_tuple_set.add(body_tuple.clone());
-                }
-                if(flag){
-                    continue;
-                }
-                if(head){
 
-                    out.add(reuseable_head_tuple.clone());
-                }else{
-                    out.addAll(body_tuple_set);
-                }
-            }
-            if(head){
-                if(!out.isEmpty()){
-                    System.out.println(qi.rule_query+" head size: "+out.size());
-                }
-            }
-            return out;
-            
-        });
-        // infers.getFirst().forEach(tuples::addAll);
-        // HashSet<String> k = new HashSet<String>();
-        // Pair<List<ArrayTreeSet>, List<Integer>> infers_2 = queryExecutor.executeQueriesWithInfoWithEmptyID(queries, queries_infos, (rs_, qi) -> {
-        //     ArrayTreeSet out = new ArrayTreeSet();
-        //     boolean flag = false;
-        //     int head_arity = qi.headArity;
-        //     int head_functor_id = qi.headFucID;
-        //     int[] reuseable_head_tuple = new int[head_arity+1];
-            
-        //     while(rs_.next()){
-        //         int c = 1;
-        //         for(int j=0;j<head_arity; j++){
-        //             reuseable_head_tuple[j] = rs_.getInt(c++);
-        //         }
-        //         reuseable_head_tuple[head_arity] = head_functor_id;
-        //         // if(head&&deleted.contains(reuseable_head_tuple)){
-        //         //     continue;
-        //         // }
-        //         ArrayTreeSet body_tuple_set = new ArrayTreeSet();
-        //         for(int i=0;i<qi.bodySize;i++){
-        //             int body_arity = qi.bodyArities[i];
-        //             int[] body_tuple = new int[body_arity+1];
-        //             for(int j=0;j<body_arity; j++){
-        //                 body_tuple[j] = rs_.getInt(c++);
-        //             }
-        //             body_tuple[body_arity] = qi.bodyFucIDs[i];
-        //             if(deleted.contains(body_tuple)){
-        //                 flag = true;
-        //                 break;
-        //             }
-        //             body_tuple_set.add(body_tuple.clone());
-        //         }
-        //         if(flag){
-        //             continue;
-        //         }
-        //         for(int[] tuple:body_tuple_set){
-        //             if(tuples.contains(tuple)){
-        //                 k.add(qi.rule_query);
-        //                 System.out.println("contained rules: "+ qi.rule_query);
-        //             }
-        //         }
-        //     }
-        //     // if(head){
-        //     //     if(!out.isEmpty()){
-        //     //         System.out.println(qi.rule_query+" head size: "+out.size());
-        //     //     }
-        //     // }
-        //     return out;
-            
-        // });
-        List<ArrayTreeSet> inferred_tuple = infers.getFirst();
-        for(int i=0;i<inferred_tuple.size();i++){
-            tuples.addAll(inferred_tuple.get(i));
-        }
-        DBRule[] not_empty_head_rules = new DBRule[infers.getSecond().size()];  
-        for(int i=0;i<infers.getSecond().size();i++){
-            not_empty_head_rules[i] = rule_set[infers.getSecond().get(i)];
-        }
-        return new Pair<DBRule[], ArrayTreeSet>(not_empty_head_rules, tuples);
-    }
     public Pair<DBRule[], ArrayTreeSet> selectRulesTuplesConcurrent_2(DBRule[] rule_set) throws Exception{
-        /*
-         * get the rule infered tuples and check whether it in deleted
-         */
         // HashSet<DBRule> empty_head_rules = new HashSet<DBRule>();
         ArrayTreeSet tuples = new ArrayTreeSet();
         String[] queries = new String[rule_set.length];
@@ -2240,10 +2954,20 @@ public class DatabaseManager {
         }
         return new Pair<ArrayTreeSet, HashSet<Integer>>(tuples, empty_head_rules);
     }
-    public Pair<ArrayTreeSet, HashSet<Integer>> selectRulesTuplesConcurrent(QueryInfo[] qis, Boolean head, ArrayTreeSet deleted) throws Exception{
+    public ArrayTreeSet selectRulesTuplesDeleteConcurrent(QueryInfo[] qis) throws Exception{
         /*
          * get the rule infered tuples and check whether it in deleted
          */
+        HashSet<Integer> empty_head_rules = new HashSet<Integer>();
+        ArrayTreeSet tuples = new ArrayTreeSet();
+
+        // method 1: single thread remove every selected tuple
+        // method 2: multi thread select all the tuples and remove them
+        // method 3: cte remove all the selected tuples
+        return tuples;
+    }
+    public Pair<ArrayTreeSet, HashSet<Integer>> selectRulesTuplesConcurrent(QueryInfo[] qis, Boolean head, ArrayTreeSet deleted) throws Exception{
+
         HashSet<Integer> empty_head_rules = new HashSet<Integer>();
         ArrayTreeSet tuples = new ArrayTreeSet();
 
@@ -2307,9 +3031,6 @@ public class DatabaseManager {
         return new Pair<ArrayTreeSet, HashSet<Integer>>(tuples, empty_head_rules);
     }
     public Pair<ArrayTreeSet, HashSet<String>> selectRulesTuplesConcurrent(String[] rule_set, QueryInfo[] qis, Boolean head, ArrayTreeSet deleted) throws Exception{
-        /*
-         * get the rule infered tuples and check whether it in deleted
-         */
         HashSet<String> empty_head_rules = new HashSet<String>();
         ArrayTreeSet tuples = new ArrayTreeSet();
 
@@ -2367,9 +3088,7 @@ public class DatabaseManager {
         return new Pair<ArrayTreeSet, HashSet<String>>(tuples, empty_head_rules);
     }
     public Pair<ArrayTreeSet, HashSet<DBRule>> selectRulesTuplesConcurrent(DBRule[] rule_set, Boolean head, ArrayTreeSet deleted) throws Exception{
-        /*
-         * get the rule infered tuples and check whether it in deleted
-         */
+
         HashSet<DBRule> empty_head_rules = new HashSet<DBRule>();
         ArrayTreeSet tuples = new ArrayTreeSet();
         String[] queries = new String[rule_set.length];
@@ -2578,7 +3297,7 @@ public class DatabaseManager {
 
             String sql = rule.ruleHead2SQL_Set();
             // execute the sql
-            Connection dbcon = (DuckDBConnection) connectionPool.getConnection();;
+            Connection dbcon = (DuckDBConnection) connectionPool.getConnection();
             try(Statement stmt = dbcon.createStatement();){
                     ResultSet rs = stmt.executeQuery(sql);
                     boolean flag = false;
@@ -2628,7 +3347,7 @@ public class DatabaseManager {
                     stmt.close();
                 }finally{
                     if (dbcon != null) {
-                        connectionPool.releaseConnection(dbcon); // 归还连接
+                        connectionPool.releaseConnection(dbcon); 
                     }
                 }
             }
@@ -2650,10 +3369,32 @@ public class DatabaseManager {
             queryExecutor.executeQuery(sql);
         }
     }
-    public void removelTuples_Batch(ArrayTreeSet deleted) throws Exception{
-        removelTuples_Batch(deleted, true);
+
+    public void removelTuples_Batch(ArrayTreeSet deleted, boolean resort, String table_name) throws Exception{
+
+        set_write_mode();
+        String sql = "SELECT * FROM " + table_name;
+        ArrayTreeSet origin_tuples = queryExecutor.executeQuerySingleThread(sql, rs_ -> {
+            ArrayTreeSet out = new ArrayTreeSet();
+            while(rs_.next()){
+                int arity = Integer.parseInt(relationMeta.get(relation2id.get(table_name)).get(1));
+                int[] tuple = new int[arity+1];
+                for(int i=0;i<arity;i++){
+                    tuple[i] = rs_.getInt(i+1);
+                }
+                tuple[arity] = relation2id.get(table_name);
+                out.add(tuple);
+            }
+            return out;
+        });
+        origin_tuples.removeAll(deleted);
+        String drop_sql = "TRUNCATE TABLE " + table_name;
+        queryExecutor.executeQuery(drop_sql);
+        appendTuples(origin_tuples, table_name);
+        
+        set_readonly_mode();
     }
-    public void removelTuples_Batch(ArrayTreeSet deleted, boolean resort) throws Exception{
+    public void removelTuples_Batch(ArrayTreeSet deleted) throws Exception{
         HashMap<String, ArrayTreeSet> table2tuples = new HashMap<String, ArrayTreeSet>();
         for(int[] tuple:deleted){
             String table_name = relationMeta.get(tuple[tuple.length-1]).get(0);
@@ -2702,7 +3443,6 @@ public class DatabaseManager {
     }  
 
     public void appendTuples(ArrayTreeSet tuples) throws Exception {  
-        // distribute tuples to different tables
         HashMap<String, ArrayTreeSet> table2tuples = new HashMap<String, ArrayTreeSet>();
         for(int[] tuple:tuples){
             String table_name = relationMeta.get(tuple[tuple.length-1]).get(0);
@@ -2719,9 +3459,7 @@ public class DatabaseManager {
             appendTuples(to_insert, table_name);
         }
     }
-    // DuckDB 插入方法  
     private void appendToDuckDB(ArrayTreeSet tuples, String tableName) throws Exception {  
-        // sort tuples
         int[][] sorted_tuples = new int[tuples.size()][];
         int i = 0;
         for(int[] tuple:tuples){
@@ -2759,35 +3497,30 @@ public class DatabaseManager {
         }  
     }  
 
-    // PostgreSQL 插入方法  
     private void appendToPostgreSQL(ArrayTreeSet tuples, String tableName) throws Exception {  
         Connection conn = null;  
         PreparedStatement preparedStatement = null;  
 
         try {  
-            conn = connectionPool.getConnection(); // 获取连接  
-
-            // 准备 SQL 语句，适配表的列数量  
+            conn = connectionPool.getConnection(); 
             String sql = generateInsertSQL(tableName);  
             preparedStatement = conn.prepareStatement(sql);  
 
-            // 批量插入数据  
             for (int[] tuple : tuples) {  
                 for (int i = 0; i < 2; i++) {  
-                    preparedStatement.setInt(i + 1, tuple[i]); // 设定参数，从1开始  
+                    preparedStatement.setInt(i + 1, tuple[i]);  
                 }  
                 preparedStatement.addBatch();  
             }  
 
-            preparedStatement.executeBatch(); // 执行批处理  
+            preparedStatement.executeBatch();
         } catch (SQLException e) {  
             e.printStackTrace();  
         } finally {  
-            // 确保资源正确释放  
             try {  
                 if (preparedStatement != null) preparedStatement.close();  
                 if (conn != null) {  
-                    connectionPool.releaseConnection(conn); // 归还连接  
+                    connectionPool.releaseConnection(conn);
                 }  
             } catch (SQLException e) {  
                 e.printStackTrace();  
@@ -2795,7 +3528,6 @@ public class DatabaseManager {
         }  
     }  
 
-    // 生成插入 SQL 的辅助方法  
     private String generateInsertSQL(String tableName) {  
         StringBuilder sql = new StringBuilder("INSERT INTO ").append(tableName).append(" VALUES (");  
         for (int i = 0; i < 2; i++) {  
@@ -2830,7 +3562,7 @@ public class DatabaseManager {
 
         if(!origin_tuples.isEmpty()){
             // create the table
-            DuckDBConnection conn = (DuckDBConnection) connectionPool.getConnection();;
+            DuckDBConnection conn = (DuckDBConnection) connectionPool.getConnection();
             try (var appender = conn.createAppender(DuckDBConnection.DEFAULT_SCHEMA, table_name)) {
                 for(int[] tuple:origin_tuples){
                     appender.beginRow();
@@ -2842,7 +3574,7 @@ public class DatabaseManager {
                 }
             }finally{
                 if (conn != null) {
-                    connectionPool.releaseConnection(conn); // 归还连接
+                    connectionPool.releaseConnection(conn);
                 }
             }
         }
@@ -2875,67 +3607,133 @@ public class DatabaseManager {
         }
     }
 
-    public void compressDB3_Set_greedy(DBRule[] rule_set) throws Exception{
-        /*
-         * Step 1: remove the single rule can eliminated the most tuples
-         * Step 2: iter the remaining tuples and confirm the entailment
-         */
-        ArrayTreeSet delta_t = new ArrayTreeSet();
+    public Pair<DBRule, ArrayTreeSet> argMaxRemovedTuples(Vector<DBRule> T, ArrayTreeSet deleted, int threshold) throws Exception{
+        Vector<DBRule> T_1;
         ArrayTreeSet head_tuples = new ArrayTreeSet();
-        ArrayTreeSet body_tuples;
-
-        ArrayTreeSet deleted = new ArrayTreeSet();
-        Vector<DBRule> T = new Vector<DBRule>(Arrays.asList(rule_set));
-        HashSet<DBRule> empty_head_rules = new HashSet<DBRule>();
-
-        int max_size = 1;
-        while(max_size != 0){
-            while(true){
-                if(delta_t.size()!=0){
-                    // System.out.println("add deleted tuples: " + delta_t.size());
-                    deleted.addAll(delta_t);
-
-                }
-                Pair<ArrayTreeSet, HashSet<DBRule>> pair_1 = selectRulesTuplesConcurrent(T.toArray(new DBRule[T.size()]), true, deleted);
-                Pair<ArrayTreeSet, HashSet<DBRule>> pair_2  = selectRulesTuplesConcurrent(T.toArray(new DBRule[T.size()]), false, deleted);
-                head_tuples = pair_1.getFirst();
-                body_tuples = pair_2.getFirst();
-                empty_head_rules = pair_1.getSecond();
-                head_tuples.removeAll(body_tuples);
-                delta_t = head_tuples;
-                if (delta_t.size()==0){
-                    break;
-                }
+        ArrayTreeSet body_tuples = new ArrayTreeSet();
+        HashMap<DBRule, ArrayTreeSet> r_t = new HashMap<DBRule, ArrayTreeSet>();
+        for(DBRule r:T){
+            T_1 = ruleClosure(T, r);
+            if (T_1.size()==1){
+                continue;
             }
-            HashMap<DBRule, ArrayTreeSet> rule_d = argMaxRemovedTuplesAll(T, deleted, 0);
-            if(rule_d.isEmpty()){
+            T_1.remove(r);
+            Pair<ArrayTreeSet, HashSet<DBRule>> pair_1 = selectRulesTuplesConcurrent(T_1.toArray(new DBRule[T_1.size()]), true, deleted);
+            Pair<ArrayTreeSet, HashSet<DBRule>> pair_2  = selectRulesTuplesConcurrent(T_1.toArray(new DBRule[T_1.size()]), false, deleted);
+            head_tuples = pair_1.getFirst();
+            body_tuples = pair_2.getFirst();
+            head_tuples.removeAll(body_tuples);
+            if(head_tuples.size()>threshold){
+                return new Pair<DBRule, ArrayTreeSet>(r, head_tuples);
+            }
+        }
+        return null;
+    }
+    public HashMap<DBRule, ArrayTreeSet> argMaxRemovedTuplesAll(Vector<DBRule> T, ArrayTreeSet deleted, int threshold) throws Exception{
+        Vector<DBRule> T_1;
+        ArrayTreeSet head_tuples = new ArrayTreeSet();
+        ArrayTreeSet body_tuples = new ArrayTreeSet();
+        HashMap<DBRule, ArrayTreeSet> r_t = new HashMap<DBRule, ArrayTreeSet>();
+        for(DBRule r:T){
+            T_1 = ruleClosure(T, r);
+            if (T_1.size()==1){
+                continue;
+            }
+            T_1.remove(r);
+            Pair<ArrayTreeSet, HashSet<DBRule>> pair_1 = selectRulesTuplesConcurrent(T_1.toArray(new DBRule[T_1.size()]), true, deleted);
+            Pair<ArrayTreeSet, HashSet<DBRule>> pair_2  = selectRulesTuplesConcurrent(T_1.toArray(new DBRule[T_1.size()]), false, deleted);
+            head_tuples = pair_1.getFirst();
+            body_tuples = pair_2.getFirst();
+            head_tuples.removeAll(body_tuples);
+            if(head_tuples.size()>threshold){
+                r_t.put(r, head_tuples);
+            }
+        }
+        return r_t;
+    }
+    public HashSet<Integer> predicatesOverlap(DBRule[] rs, HashSet<String> predicates){
+        HashSet<Integer> T_1 = new HashSet<>();
+        for(int i=0;i<rs.length;i++){
+            HashSet<String> body_predicates = new HashSet<>();
+            for(Predicate p:rs[i].body){
+                body_predicates.add(p.functor);
+            }
+            body_predicates.add(rs[i].head.functor);
+            body_predicates.retainAll(predicates);
+            if(!body_predicates.isEmpty()){
+                T_1.add(i);
+            }
+        }
+        return T_1;
+    }
+    public HashSet<DBRule> predicatesOverlap(Vector<DBRule> T, HashSet<String> predicates){
+        HashSet<DBRule> T_1 = new HashSet<>();
+        for(DBRule r:T){
+            HashSet<String> body_predicates = new HashSet<>();
+            for(Predicate p:r.body){
+                body_predicates.add(p.functor);
+            }
+            body_predicates.add(r.head.functor);
+            body_predicates.retainAll(predicates);
+            if(!body_predicates.isEmpty()){
+                T_1.add(r);
+            }
+        }
+        return T_1;
+    }
+    public HashSet<QueryInfo> ruleClosure(DBRule[] rs, DBRule r, QueryInfo[] qis) throws ParseException, SQLException{
+        HashSet<Integer> rs_1 = new HashSet<>();
+        HashSet<String> predicates = new HashSet<>();
+        HashSet<Integer> rs_2;
+        HashSet<QueryInfo> qi_r = new HashSet<>();
+        // get all the predicates in the body and head in r, iter all the rules in T, if the predicate set has overlap with the rule in T, then add the rule to T_1
+        for(Predicate p:r.body){
+            predicates.add(p.functor);
+        }
+        predicates.add(r.head.functor);
+        while(true){
+            rs_2 = (HashSet<Integer>) rs_1.clone();
+            rs_1 = predicatesOverlap(rs, predicates);
+            if(rs_1.size()==rs_2.size()||rs_1.size()==1){
                 break;
             }
-            DBRule remove_rule = null;
-            max_size = 0;
-            for(DBRule r:rule_d.keySet()){
-                if(rule_d.get(r).size()>max_size){
-                    max_size = rule_d.get(r).size();
-                    remove_rule = r;
+            for(int ri:rs_1){
+                for(Predicate p:rs[ri].body){
+                    predicates.add(p.functor);
                 }
+                predicates.add(rs[ri].head.functor);
             }
-
-            ArrayTreeSet remove_tuples = rule_d.get(remove_rule);
-            // System.out.println("remove rule: " + remove_rule.toString() + " remove tuples: " + remove_tuples.size());
-            delta_t = remove_tuples; 
-            T.remove(remove_rule);
         }
-        long remove_time = System.currentTimeMillis();
-        removelTuples_Batch(deleted);
-        long step_1_end = System.currentTimeMillis();
-        Monitor.removeTime += step_1_end - remove_time;
-        long iter_start= System.currentTimeMillis();
-        Pair<ArrayTreeSet, HashSet<DBRule>> pair = selectRulesTuplesConcurrent(rule_set, true, deleted);
-        compressDB_delta(pair.getFirst());
-        long iter_end = System.currentTimeMillis();
-        Monitor.iterRemoveTime += iter_end - iter_start;
-        compressed = true;
+        for(int ri:rs_1){
+            qi_r.add(qis[ri]);
+        }
+        return qi_r;
     }
+    public Vector<DBRule> ruleClosure(Vector<DBRule> T, DBRule r) throws ParseException, SQLException{
+        HashSet<DBRule> T_1 = new HashSet<>();
+        HashSet<String> predicates = new HashSet<>();
+        HashSet<DBRule> T_2;
+        // get all the predicates in the body and head in r, iter all the rules in T, if the predicate set has overlap with the rule in T, then add the rule to T_1
+        for(Predicate p:r.body){
+            predicates.add(p.functor);
+        }
+        predicates.add(r.head.functor);
+        while(true){
+            T_2 = (HashSet<DBRule>) T_1.clone();
+            T_1 = predicatesOverlap(T, predicates);
+            if(T_1.size()==T_2.size()||T_1.size()==1){
+                break;
+            }
+            for(DBRule rule:T_1){
+                for(Predicate p:rule.body){
+                    predicates.add(p.functor);
+                }
+                predicates.add(rule.head.functor);
+            }
+        }
+        return T_1.stream().collect(Collectors.toCollection(Vector::new));
+    }
+
     public HashSet<QueryInfo>[] get_closure(DBRule[] db_rules, QueryInfo[] qis) throws ParseException, SQLException{
         HashSet<QueryInfo>[] cls_rls = (HashSet<QueryInfo>[]) new HashSet[db_rules.length];
         for(int i=0;i<db_rules.length;i++){
@@ -2957,20 +3755,6 @@ public class DatabaseManager {
             System.out.println("remove table: " + table_name + " num: " + table2num.get(table_name));
         }
     }
-    // public void compressDB4(DBRule[] rule_set) throws Exception{
-
-    //     // reset all the ids of the rules by the order
-
-    //     ArrayTreeSet deleted = new ArrayTreeSet();
-    //     // remove symmetry rules
-    //     for(int i=0;i<rule_set.length;i++){
-    //         ArrayTreeSet tuples_1 = selectRulesTuples(rule_set[i], true, deleted);
-    //         if(deleted.size()!=0){
-    //             deleted.addAll(tuples_1);
-    //         }
-    //     }
-    //     removelTuples_Batch(deleted);
-    // }
 
     public Triple<Integer, Boolean, Integer> compress1Step(DBRule rule, int patience, int max_patience) throws Exception{
         ArrayTreeSet deleted = new ArrayTreeSet();
@@ -2996,21 +3780,35 @@ public class DatabaseManager {
         return new Triple<Integer, Boolean, Integer>(patience, true, deleted.size());
     }
 
-    public Quadruple<Integer, Boolean, ArrayTreeSet, ArrayTreeSet> compress1Step_set(DBRule rule, int patience, int max_patience, ArrayTreeSet deleted) throws Exception{
+    public Quadruple<Integer, Boolean, ArrayTreeSet, ArrayTreeSet> compress1Step_set(DBRule rule, int patience, int max_patience, ArrayTreeSet deleted, int mode) throws Exception{
         // remove symmetry rules
         // ArrayTreeSet inferred = selectRuleTuples(rule, true, deleted);
-        ArrayTreeSet batch_deleted = selectRuleRewrite(rule, true, deleted);
-        boolean flag = deleted.addAll(batch_deleted);
-        if(!flag){
-            patience++;
+        // int mode = mode; // 0: cte, 1: multi thread select and remove, 3: single select with remove
+        if(mode==0){
+            deleted.addAll(selectRuleRewriteDeleteCTE(rule, deleted));
+        }else if(mode==1){
+            ArrayTreeSet batch_deleted = selectRuleRewrite(rule, true, deleted);
+            boolean flag = deleted.addAll(batch_deleted);
+            if(!flag){
+                patience++;
+            }else{
+                patience = 0;
+            }
+            // if(batch_deleted.size()>=1000){
+            //     removelTuples_Batch(batch_deleted, true, rule.head.functor);
+            //     batch_deleted.clear();
+            // }
+            if(patience>max_patience){
+                // removelTuples_Batch(deleted);
+                return new Quadruple<Integer, Boolean, ArrayTreeSet, ArrayTreeSet>(patience, false, deleted, batch_deleted);
+            }
+            return new Quadruple<Integer, Boolean, ArrayTreeSet, ArrayTreeSet>(patience, true, deleted, batch_deleted);
+        }else if(mode==2){
+            deleted.addAll(selectRuleRewriteDeleteSingle(rule, deleted));
         }else{
-            patience = 0;
+            throw new Exception("Invalid mode");
         }
-        if(patience>max_patience){
-            // removelTuples_Batch(deleted);
-            return new Quadruple<Integer, Boolean, ArrayTreeSet, ArrayTreeSet>(patience, false, deleted, batch_deleted);
-        }
-        return new Quadruple<Integer, Boolean, ArrayTreeSet, ArrayTreeSet>(patience, true, deleted, batch_deleted);
+        return new Quadruple<Integer, Boolean, ArrayTreeSet, ArrayTreeSet>(patience, true, deleted, new ArrayTreeSet());
     }  
     public Triple<Integer, Boolean, ArrayTreeSet> compress1Step(DBRule rule, int patience, int max_patience, ArrayTreeSet deleted) throws Exception{
         // remove symmetry rules
@@ -3081,7 +3879,6 @@ public class DatabaseManager {
     }
     public ArrayTreeSet selectAsymRule(DBRule rule, ArrayTreeSet deleted) throws Exception{
         // select all the tuples in the head table
-        String table_name = rule.head.functor;
         // String sql = "SELECT * FROM " + table_name;
         String head_query = head2query(rule.head);
         DBRule[] head_rewrited = rewriter.rewrite_query_without_time(head_query);
@@ -3146,64 +3943,7 @@ public class DatabaseManager {
             }
         }
         return asym_tuples;
-    }            
-    // public ArrayTreeSet selectAsymRule(DBRule rule, ArrayTreeSet deleted) throws ParseException{
-    //     // select all the tuples in the head table
-    //     String table_name = rule.head.functor;
-    //     // String sql = "SELECT * FROM " + table_name;
-    //     String sql_1_ = head2query(rule.head);
-    //     DBRule[] head_rewrited = rewriter.rewrite_query_without_time(sql_1_);
-    //     String sql_1 = pred2query(rule.head);
-    //     String sql_2 = pred2query(rule.body.get(0));
-    //     System.out.println("sql_1: "+sql_1);
-    //     System.out.println("sql_2: "+sql_2);
-    //     ArrayTreeSet head_tuples = queryExecutor.executeQuerySingleThread(sql_1, rs_ -> {
-    //         ArrayTreeSet out = new ArrayTreeSet();
-    //         while(rs_.next()){
-    //             int arity = Integer.parseInt(relationMeta.get(relation2id.get(table_name)).get(1));
-    //             int[] tuple = new int[arity+1];
-    //             for(int i=0;i<arity;i++){
-    //                 tuple[i] = rs_.getInt(i+1);
-    //             }
-    //             tuple[arity] = relation2id.get(table_name);
-    //             out.add(tuple);
-    //         }
-    //         return out;
-    //     });
-    //     if(rule.head.args[0].isConstant||rule.head.args[1].isConstant){
-    //         ArrayTreeSet body_tuples = queryExecutor.executeQuerySingleThread(sql_2, rs_ -> {
-    //             ArrayTreeSet out = new ArrayTreeSet();
-    //             while(rs_.next()){
-    //                 int arity = Integer.parseInt(relationMeta.get(relation2id.get(table_name)).get(1));
-    //                 int[] tuple = new int[arity+1];
-    //                 for(int i=0;i<arity;i++){
-    //                     tuple[i] = rs_.getInt(i+1);
-    //                 }
-    //                 tuple[arity] = relation2id.get(table_name);
-    //                 out.add(tuple);
-    //             }
-    //             return out;
-    //         });
-    //         for(int[] tuple:body_tuples){
-    //             if(head_tuples.contains(tuple)){
-    //                 int[] asym_tuple = new int[]{tuple[1], tuple[0], tuple[2]};
-    //                 if(head_tuples.contains(asym_tuple)){
-    //                     head_tuples.add(tuple);
-    //                 }
-    //             }
-    //         }
-    //     }
-    //     // determine the head_tuples is null or not
-    //     // add the tuples whose asym tuple are not in the deleted
-    //     ArrayTreeSet asym_tuples = new ArrayTreeSet();
-    //     for(int[] tuple:head_tuples){
-    //         int[] asym_tuple = new int[]{tuple[1], tuple[0], tuple[2]};
-    //         if(!deleted.contains(asym_tuple)&&!asym_tuples.contains(asym_tuple)&&tuple[0]!=tuple[1]&&head_tuples.contains(asym_tuple)){
-    //             asym_tuples.add(tuple);
-    //         }
-    //     }
-    //     return asym_tuples;
-    // }
+    }
     public String head2query(Predicate head){
         String table_name = head.functor;
         String rule_query = "?(";
@@ -3229,7 +3969,6 @@ public class DatabaseManager {
         return rule_query;
     }
     public ArrayTreeSet selectRuleRewrite(DBRule rule, boolean head, ArrayTreeSet deleted) throws Exception{
-        String table_name = rule.head.functor;
         // int[] tupleData = Arrays.copyOfRange(tuple, 0, tuple.length-1);
         //DBRule[] rule_rewrite = rewriteRule(table_name, tuple);
         // DBRule[] rule_rewrite = rewritRule(tuple, table_name);
@@ -3274,11 +4013,90 @@ public class DatabaseManager {
             queryInfos[i] = queryInfo;
             queries[i] = rule_rewrited_list.get(i).rule2SQL(false, true);
         }
-        long q_s = System.currentTimeMillis();
+        System.currentTimeMillis();
         //System.out.println("rewrite rule: " + (System.currentTimeMillis() - start) + "ms" + " rewrite rules num: " + rule_rewrite.length);
         Pair<ArrayTreeSet, HashSet<Integer>> result_pair = selectRulesTuplesConcurrent(queryInfos, head, deleted);
-        long q_e = System.currentTimeMillis();
+        System.currentTimeMillis();
         seleted_tuples.addAll(result_pair.getFirst());
+        return seleted_tuples;
+    }
+    public ArrayTreeSet selectRuleRewriteDeleteSingle(DBRule rule, ArrayTreeSet deleted) throws Exception{
+        // int[] tupleData = Arrays.copyOfRange(tuple, 0, tuple.length-1);
+        //DBRule[] rule_rewrite = rewriteRule(table_name, tuple);
+        // DBRule[] rule_rewrite = rewritRule(tuple, table_name);
+        // -------------------rewrite the rule-------------------
+        String query = head2query(rule.head);
+        DBRule[] rule_rewrited = rewriter.rewrite_query_without_time(query);
+        List<DBRule> rule_rewrited_list = new ArrayList<DBRule>();
+        List<DBRule> asym_rules = new ArrayList<DBRule>();
+        for(int i=1;i<rule_rewrited.length;i++){
+            if(isAsymRule(rule_rewrited[i])){
+                asym_rules.add(rule_rewrited[i]);
+            }else{
+                rule_rewrited_list.add(rule_rewrited[i]);
+            }
+        }
+        ArrayTreeSet seleted_tuples = new ArrayTreeSet();
+        for(DBRule r:asym_rules){
+            seleted_tuples.addAll(selectAsymRule(r, deleted));
+        }
+        // -------------------rewrite the rule-------------------
+
+        // DBRule[] rule_rewrited = direct_rewrite_rule(table_name, new Argument[]{new Argument(tuple[0], tuple[2], 0), new Argument(tuple[1], tuple[0], 1)});
+        String[] queries = new String[rule_rewrited_list.size()];
+        for(int i=0;i<rule_rewrited_list.size();i++){
+            queries[i] = rule_rewrited_list.get(i).rule2SQLDelete();
+        }
+        //System.out.println("rewrite rule: " + (System.currentTimeMillis() - start) + "ms" + " rewrite rules num: " + rule_rewrite.length);
+        boolean flag = true;
+        for(String query_:queries){
+            try{
+                flag = flag && queryExecutor.executeQuery(query_);
+            }catch(Exception e){
+                System.out.println("error rule: "+rule.toString());
+                throw e;
+            }
+        }
+        assert flag;
+        return seleted_tuples;
+    }
+    public ArrayTreeSet selectRuleRewriteDeleteCTE(DBRule rule, ArrayTreeSet deleted) throws Exception{
+        // int[] tupleData = Arrays.copyOfRange(tuple, 0, tuple.length-1);
+        //DBRule[] rule_rewrite = rewriteRule(table_name, tuple);
+        // DBRule[] rule_rewrite = rewritRule(tuple, table_name);
+        // -------------------rewrite the rule-------------------
+        String query = head2query(rule.head);
+        DBRule[] rule_rewrited = rewriter.rewrite_query_without_time(query);
+        List<DBRule> rule_rewrited_list = new ArrayList<DBRule>();
+        List<DBRule> asym_rules = new ArrayList<DBRule>();
+        for(int i=1;i<rule_rewrited.length;i++){
+            if(isAsymRule(rule_rewrited[i])){
+                asym_rules.add(rule_rewrited[i]);
+            }else{
+                rule_rewrited_list.add(rule_rewrited[i]);
+            }
+        }
+        ArrayTreeSet seleted_tuples = new ArrayTreeSet();
+        for(DBRule r:asym_rules){
+            seleted_tuples.addAll(selectAsymRule(r, deleted));
+        }
+        // -------------------rewrite the rule-------------------
+
+        // DBRule[] rule_rewrited = direct_rewrite_rule(table_name, new Argument[]{new Argument(tuple[0], tuple[2], 0), new Argument(tuple[1], tuple[0], 1)});
+        if(rule_rewrited_list.size()==0){
+            return seleted_tuples;
+        }
+        String cte_query = "WITH "+ rule.head.functor +"_cte AS (";
+        for(int i=0;i<rule_rewrited_list.size();i++){
+            cte_query += rule_rewrited_list.get(i).rule2SQL(false, false);
+            if(i!=rule_rewrited_list.size()-1){
+                cte_query += " UNION ";
+            }
+        }
+        cte_query += ") DELETE FROM "+ rule.head.functor + " USING "+ rule.head.functor +"_cte";
+        //System.out.println("rewrite rule: " + (System.currentTimeMillis() - start) + "ms" + " rewrite rules num: " + rule_rewrite.length);
+        boolean flag = queryExecutor.executeQuery(cte_query);
+        assert flag;
         return seleted_tuples;
     }
     public Triple<Integer, Boolean, Integer> compress1Step(DBRule[] dbRules, int patience, int max_patience, int deleted_size) throws Exception{
@@ -3838,335 +4656,7 @@ public class DatabaseManager {
         });
         return rs;
     }
-    // public void compressDB3_Set(DBRule[] rule_set) throws Exception{
-    //     long p1 = 0;
-    //     long p2 = 0;
-    //     long p3 = 0;
-    //     long p4 = 0;
-    //     long start= System.currentTimeMillis();
-    //     ArrayTreeSet delta_t = new ArrayTreeSet();
-    //     ArrayTreeSet head_tuples = new ArrayTreeSet();
-    //     ArrayTreeSet body_tuples;
 
-    //     ArrayTreeSet deleted = new ArrayTreeSet();
-    //     Vector<DBRule> T = new Vector<DBRule>(Arrays.asList(rule_set));
-    //     int d = 1;
-    //     while(d != 0){
-    //         long p1_s = System.currentTimeMillis();
-    //         while(true){
-    //             if(delta_t.size()!=0){
-    //                 deleted.addAll(delta_t);
-    //             }
-    //             Pair<ArrayTreeSet, HashSet<DBRule>> pair_1 = selectRulesTuplesConcurrent(T.toArray(new DBRule[T.size()]), true, deleted);
-    //             Pair<ArrayTreeSet, HashSet<DBRule>> pair_2  = selectRulesTuplesConcurrent(T.toArray(new DBRule[T.size()]), false, deleted);
-    //             head_tuples = pair_1.getFirst();
-    //             body_tuples = pair_2.getFirst();
-    //             for(DBRule r:pair_1.getSecond()){
-    //                 if(T.contains(r)){
-    //                     T.remove(r);
-    //                 }
-    //             }
-    //             delta_t = head_tuples;
-    //             delta_t.removeAll(body_tuples);
-    //             if (delta_t.size()==0){
-    //                 break;
-    //             }
-    //         }
-    //         long p1_e = System.currentTimeMillis();
-    //         p1 += p1_e - p1_s;
-    //         long p2_s = System.currentTimeMillis();
-    //         long step_1_end = System.currentTimeMillis();
-    //         Pair<DBRule, ArrayTreeSet> rule_d = argMaxRemovedTuples(T, deleted, 0);
-    //         long step_1_end_1 = System.currentTimeMillis();
-    //         Monitor.ruleFilterTime += step_1_end_1 - step_1_end;
-    //         if(rule_d == null){
-    //             break;
-    //         }
-    //         DBRule remove_rule = rule_d.getFirst();
-    //         ArrayTreeSet remove_tuples = rule_d.getSecond();
-    //         // System.out.println("remove rule: " + remove_rule.toString() + " remove tuples: " + remove_tuples.size());
-    //         Vector<DBRule> T_1 = new Vector<>(); // avoid the repeat computation
-    //         T_1.addAll(T.subList(T.indexOf(remove_rule)+1, T.size()));
-    //         T_1.addAll(T.subList(0, T.indexOf(remove_rule)));
-    //         T = T_1;
-    //         delta_t = remove_tuples;
-    //         d = remove_tuples.size();
-    //         long p2_e = System.currentTimeMillis();
-    //         p2 += p2_e - p2_s;
-
-    //     }
-    //     long remove_time = System.currentTimeMillis();
-    //     removelTuples_Batch(deleted);
-    //     long step_1_end = System.currentTimeMillis();
-    //     Monitor.removeTime += step_1_end - remove_time;
-    //     p3 += step_1_end - remove_time;
-    //     long iter_start = System.currentTimeMillis();
-    //     // remove the index 0 in rule_set
-    //     // DBRule[] new_rule_set = new DBRule[rule_set.length-1];
-    //     // System.arraycopy(rule_set, 1, new_rule_set, 0, rule_set.length - 1);
-    //     deleted.clear();
-    //     Pair<ArrayTreeSet, HashSet<DBRule>> pair = selectRulesTuplesConcurrent(T.toArray(new DBRule[0]), true, deleted);
-    //     compressDB_delta(T.toArray(new DBRule[0]), pair.getFirst());
-    //     long iter_end = System.currentTimeMillis();
-    //     Monitor.iterRemoveTime += iter_end - iter_start;
-    //     p4 += iter_end - iter_start;
-    //     System.out.println("p1: "+p1+" p2: "+p2+" p3: "+p3+" p4: "+p4+" tmp: "+Monitor.tmp);
-    //     compressed = true;
-    //     long step_2_end = System.currentTimeMillis();
-    // }
-
-    // public HashMap<DBRule, ArrayTreeSet> argMaxRemovedTuples(Vector<DBRule> T, ArrayTreeSet deleted) throws ParseException, SQLException{
-    //     Vector<DBRule> T_1;
-    //     ArrayTreeSet head_tuples = new ArrayTreeSet();
-    //     ArrayTreeSet body_tuples = new ArrayTreeSet();
-    //     HashMap<DBRule, ArrayTreeSet> rule_d = new HashMap<DBRule, ArrayTreeSet>();
-    //     for(DBRule r:T){
-    //         T_1 = ruleClosure(T, r);
-    //         if (T_1.size()==1){
-    //             continue;
-    //         }
-    //         T_1.remove(r);
-    //         long start = System.currentTimeMillis();
-    //         head_tuples = selectRulesTuples(T_1.toArray(new DBRule[T_1.size()]), true, deleted);
-    //         body_tuples = selectRulesTuples(T_1.toArray(new DBRule[T_1.size()]), false, deleted);
-    //         head_tuples.removeAll(body_tuples);
-    //         long end = System.currentTimeMillis();
-    //         // delta = exceptTuplesInHeadToBody(T_1);
-    //         // long end_2 = System.currentTimeMillis();
-    //         // System.out.println("time cost: " + (end - start) + "ms" + " closure size: " + T_1.size());
-    //         rule_d.put(r, head_tuples);
-    //     }
-    //     return rule_d;
-    // }
-
-    public Pair<DBRule, ArrayTreeSet> argMaxRemovedTuples(Vector<DBRule> T, ArrayTreeSet deleted, int threshold) throws Exception{
-        Vector<DBRule> T_1;
-        ArrayTreeSet head_tuples = new ArrayTreeSet();
-        ArrayTreeSet body_tuples = new ArrayTreeSet();
-        HashMap<DBRule, ArrayTreeSet> r_t = new HashMap<DBRule, ArrayTreeSet>();
-        for(DBRule r:T){
-            T_1 = ruleClosure(T, r);
-            if (T_1.size()==1){
-                continue;
-            }
-            T_1.remove(r);
-            Pair<ArrayTreeSet, HashSet<DBRule>> pair_1 = selectRulesTuplesConcurrent(T_1.toArray(new DBRule[T_1.size()]), true, deleted);
-            Pair<ArrayTreeSet, HashSet<DBRule>> pair_2  = selectRulesTuplesConcurrent(T_1.toArray(new DBRule[T_1.size()]), false, deleted);
-            head_tuples = pair_1.getFirst();
-            body_tuples = pair_2.getFirst();
-            head_tuples.removeAll(body_tuples);
-            if(head_tuples.size()>threshold){
-                return new Pair<DBRule, ArrayTreeSet>(r, head_tuples);
-            }
-        }
-        return null;
-    }
-    public HashMap<DBRule, ArrayTreeSet> argMaxRemovedTuplesAll(Vector<DBRule> T, ArrayTreeSet deleted, int threshold) throws Exception{
-        Vector<DBRule> T_1;
-        ArrayTreeSet head_tuples = new ArrayTreeSet();
-        ArrayTreeSet body_tuples = new ArrayTreeSet();
-        HashMap<DBRule, ArrayTreeSet> r_t = new HashMap<DBRule, ArrayTreeSet>();
-        for(DBRule r:T){
-            T_1 = ruleClosure(T, r);
-            if (T_1.size()==1){
-                continue;
-            }
-            T_1.remove(r);
-            Pair<ArrayTreeSet, HashSet<DBRule>> pair_1 = selectRulesTuplesConcurrent(T_1.toArray(new DBRule[T_1.size()]), true, deleted);
-            Pair<ArrayTreeSet, HashSet<DBRule>> pair_2  = selectRulesTuplesConcurrent(T_1.toArray(new DBRule[T_1.size()]), false, deleted);
-            head_tuples = pair_1.getFirst();
-            body_tuples = pair_2.getFirst();
-            head_tuples.removeAll(body_tuples);
-            if(head_tuples.size()>threshold){
-                r_t.put(r, head_tuples);
-            }
-        }
-        return r_t;
-    }
-    public HashSet<Integer> predicatesOverlap(DBRule[] rs, HashSet<String> predicates){
-        HashSet<Integer> T_1 = new HashSet<>();
-        for(int i=0;i<rs.length;i++){
-            HashSet<String> body_predicates = new HashSet<>();
-            for(Predicate p:rs[i].body){
-                body_predicates.add(p.functor);
-            }
-            body_predicates.add(rs[i].head.functor);
-            body_predicates.retainAll(predicates);
-            if(!body_predicates.isEmpty()){
-                T_1.add(i);
-            }
-        }
-        return T_1;
-    }
-    public HashSet<DBRule> predicatesOverlap(Vector<DBRule> T, HashSet<String> predicates){
-        HashSet<DBRule> T_1 = new HashSet<>();
-        for(DBRule r:T){
-            HashSet<String> body_predicates = new HashSet<>();
-            for(Predicate p:r.body){
-                body_predicates.add(p.functor);
-            }
-            body_predicates.add(r.head.functor);
-            body_predicates.retainAll(predicates);
-            if(!body_predicates.isEmpty()){
-                T_1.add(r);
-            }
-        }
-        return T_1;
-    }
-    public HashSet<QueryInfo> ruleClosure(DBRule[] rs, DBRule r, QueryInfo[] qis) throws ParseException, SQLException{
-        HashSet<Integer> rs_1 = new HashSet<>();
-        HashSet<String> predicates = new HashSet<>();
-        HashSet<Integer> rs_2;
-        HashSet<QueryInfo> qi_r = new HashSet<>();
-        // get all the predicates in the body and head in r, iter all the rules in T, if the predicate set has overlap with the rule in T, then add the rule to T_1
-        for(Predicate p:r.body){
-            predicates.add(p.functor);
-        }
-        predicates.add(r.head.functor);
-        while(true){
-            rs_2 = (HashSet<Integer>) rs_1.clone();
-            rs_1 = predicatesOverlap(rs, predicates);
-            if(rs_1.size()==rs_2.size()||rs_1.size()==1){
-                break;
-            }
-            for(int ri:rs_1){
-                for(Predicate p:rs[ri].body){
-                    predicates.add(p.functor);
-                }
-                predicates.add(rs[ri].head.functor);
-            }
-        }
-        for(int ri:rs_1){
-            qi_r.add(qis[ri]);
-        }
-        return qi_r;
-    }
-    public Vector<DBRule> ruleClosure(Vector<DBRule> T, DBRule r) throws ParseException, SQLException{
-        HashSet<DBRule> T_1 = new HashSet<>();
-        HashSet<String> predicates = new HashSet<>();
-        HashSet<DBRule> T_2;
-        // get all the predicates in the body and head in r, iter all the rules in T, if the predicate set has overlap with the rule in T, then add the rule to T_1
-        for(Predicate p:r.body){
-            predicates.add(p.functor);
-        }
-        predicates.add(r.head.functor);
-        while(true){
-            T_2 = (HashSet<DBRule>) T_1.clone();
-            T_1 = predicatesOverlap(T, predicates);
-            if(T_1.size()==T_2.size()||T_1.size()==1){
-                break;
-            }
-            for(DBRule rule:T_1){
-                for(Predicate p:rule.body){
-                    predicates.add(p.functor);
-                }
-                predicates.add(rule.head.functor);
-            }
-        }
-        return T_1.stream().collect(Collectors.toCollection(Vector::new));
-    }
-    // public void exceptTuplesInHeadToBody(Vector<DBRule> rules){
-        
-    // }
-    public void compressDB_delta(ArrayTreeSet tuples, ArrayTreeSet deleted) throws Exception{
-        long start = System.currentTimeMillis();
-        // int total = tuples.size();
-        for(int[] tuple:tuples){
-            if(checkDeletable_par(tuple, deleted)){
-                deleted.add(tuple);
-            }
-        }
-        removelTuples_Batch(deleted);
-        long end = System.currentTimeMillis();
-    }
-
-    public void compressDB_delta(ArrayTreeSet tuples) throws Exception{
-        long start = System.currentTimeMillis();
-        ArrayTreeSet deleted = new ArrayTreeSet();
-        // int total = tuples.size();
-        for(int[] tuple:tuples){
-            // tryTupleEliminationInDB(tuple, relationMeta.get(tuple.getRelationID()).get(0));\
-            deleted.add(tuple);
-            if(!checkDeletable_par(tuple, deleted)){
-                deleted.remove(tuple);
-            }
-        }
-        System.out.println("add all deleted tuples: " + deleted.size());
-        removelTuples_Batch(deleted);
-        long end = System.currentTimeMillis();
-
-        // System.out.println("successfully delete " + (deleted.size()) + " tuples in " + tuples.size() + " tuples");
-        System.out.println("delta phase cost: " + (end - start) + "ms");
-    }
-    
-    public void compressDB_iter(DBRule[] rule_set) throws Exception{
-        long iter_start = System.currentTimeMillis();
-        ArrayTreeSet head_tuples = selectRulesTuples(rule_set, true, new ArrayTreeSet());
-        compressDB_delta(head_tuples);
-        long iter_end = System.currentTimeMillis();
-        Monitor.iterRemoveTime += iter_end - iter_start;
-        compressed = true;
-        return;
-    }
-
-    // public void inferByRuleFixPoint(DBRule[] rules, DatabaseManager originalkb) throws Exception{
-    //     while(true){
-    //         int[] DBRecordsNumBefore = getDBRecordsNum(false);
-            
-    //         for(DBRule rule:rules){
-    //             String[] target_columns = new String[rule.head.args.length];
-                
-    //             for(int i=0;i<rule.head.args.length;i++){
-    //                 target_columns[i] = rule.head.functor + "_" + (i+1);
-    //             }
-    //             // String sql = rule.inferRuleAndUpdateTarget(rule, rule.head, "infered", "1");
-    //             // Statement stmt = dbcon.createStatement();
-    //             // stmt.execute(sql);
-    //             // stmt.close();
-    //             String sql = rule.rule2SQL(false, false);
-    //             int arity = rule.head.args.length;
-    //             int table_id = relation2id.get(rule.head.functor);
-    //             ArrayTreeSet infered;
-    //             try{
-    //                 infered = queryExecutor.executeQuerySingleThread(sql, rs_ -> {
-    //                     ArrayTreeSet out = new ArrayTreeSet();
-    //                     int[] tuple = new int[arity+1];
-    //                     while(rs_.next()){
-    //                         for(int j=0;j<arity; j++){
-    //                             tuple[j] = rs_.getInt(target_columns[j]);
-    //                         }
-    //                         tuple[arity] = table_id;
-    //                         out.add(tuple.clone());
-    //                     }
-    //                     return out;
-    //                 });
-    //             }catch(Exception e){
-    //                 System.out.println(sql);
-    //                 throw e;
-    //             }
-                
-    //             // get all the tuples in the target table
-    //             ArrayTreeSet tmpTuplesMap = getHeadTable(rule, false);
-    //             ArrayTreeSet allTuples = originalkb.getHeadTable(rule, false);
-    //             ArrayTreeSet new_infered = new ArrayTreeSet();
-    //             for(int[] tuple:infered){
-    //                 if(!tmpTuplesMap.contains(tuple)){
-    //                     tmpTuplesMap.add(tuple);
-    //                     if(!allTuples.contains(tuple)){
-    //                         System.out.println("append tuple: " + Arrays.toString(tuple));
-    //                     }
-    //                     new_infered.add(tuple);
-    //                 }
-    //             }
-    //             appendTuples(new_infered, rule.head.functor);
-    //         }
-    //         // System.out.println("iter");
-    //         if(Arrays.equals(getDBRecordsNum(false), DBRecordsNumBefore)){
-    //             break;
-    //         }
-    //     }
-
-    // }
     public boolean inferByRuleFixPoint(DBRule[] rules, DatabaseManager originalkb) throws Exception{
         while(true){
             int[] DBRecordsNumBefore = getDBRecordsNum(false);
@@ -4207,6 +4697,10 @@ public class DatabaseManager {
                 ArrayTreeSet tmpTuplesMap = getHeadTable(rule, false);
                 ArrayTreeSet allTuples = originalkb.getHeadTable(rule, false);
                 ArrayTreeSet new_infered = new ArrayTreeSet();
+                if(infered==null){
+                    System.out.println("infered is null");
+                    continue;
+                }
                 for(int[] tuple:infered){
                     if(!tmpTuplesMap.contains(tuple)){
                         tmpTuplesMap.add(tuple);
@@ -4299,4 +4793,389 @@ public class DatabaseManager {
         }
         set_readonly_mode();
     }
+
+    public long run_query_python(String query) throws Exception {
+        String tempConfigFile = null;
+        
+        try {
+            tempConfigFile = createTempPythonConfig(query);
+            
+            String pythonScriptPath;
+            if ("pg".equalsIgnoreCase(db_type)) {
+                pythonScriptPath = "/NewData/mjh/KR/QC/QueryComp_1/py_script/query_evaluation_pg.py";
+            } else {
+                pythonScriptPath = "/NewData/mjh/KR/QC/QueryComp_1/py_script/query_evaluation.py";
+            }
+            String[] command = {"python", pythonScriptPath, tempConfigFile};
+            ProcessBuilder processBuilder = new ProcessBuilder(command);
+            processBuilder.redirectErrorStream(true);
+            
+            Process process = processBuilder.start();
+            StringBuilder output = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    output.append(line).append("\n");
+                }
+            }
+            int exitCode = process.waitFor();
+            
+            if (exitCode != 0) {
+                throw new Exception("Python脚本执行失败，退出码: " + exitCode + "\n输出: " + output.toString());
+            }
+
+            long executionTime = parseExecutionTime(output.toString());
+            
+            return executionTime;
+            
+        } catch (Exception e) {
+            Monitor.logINFO("Python查询执行失败: " + e.getMessage());
+            return -1;
+        } finally {
+            // 执行完成后立即删除临时文件
+            if (tempConfigFile != null) {
+                cleanupTempFiles(tempConfigFile);
+            }
+        }
+    }
+    public long[] run_query_python_cte(String[] queries) throws Exception {
+        if(queries.length==1){
+            return new long[]{0, 0, run_query_python(queries[0])};
+        }
+        String tempConfigFile = null;
+        try {
+            tempConfigFile = createTempCTEConfigFile(queries);
+            String pythonScriptPath;
+            if ("pg".equalsIgnoreCase(db_type)) {
+                pythonScriptPath = "/NewData/mjh/KR/QC/QueryComp_1/py_script/query_evaluation_cte_pg.py";
+            } else {
+                pythonScriptPath = "/NewData/mjh/KR/QC/QueryComp_1/py_script/query_evaluation_cte.py";
+            }
+            String[] command = {"python", pythonScriptPath, tempConfigFile};
+
+            ProcessBuilder processBuilder = new ProcessBuilder(command);
+            processBuilder.redirectErrorStream(true);
+            
+            Process process = processBuilder.start();
+
+            StringBuilder output = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    output.append(line).append("\n");
+                }
+            }
+            int exitCode = process.waitFor();
+            
+            if (exitCode != 0) {
+                for(String query:queries){
+                    System.out.println(query);
+                }
+                throw new Exception("Python CTE脚本执行失败，退出码: " + exitCode + "\n输出: " + output.toString());
+            }
+
+            long[] executionTimes = parseDetailedExecutionTime(output.toString());
+            
+            //recover_connection();
+            
+            // CREATE MATERIALIZED VIEW IF NOT EXISTS memberof_cte(memberof_1,memberof_2) AS 
+            // (SELECT "memberof"."memberof_1" AS "memberof_1", "memberof"."memberof_2" AS "memberof_2" 
+            // FROM "memberof") 
+            // UNION ALL 
+            // (SELECT "takescourse"."takescourse_1" AS "memberof_1", "worksfor"."worksfor_2" AS "memberof_2" 
+            // FROM "takescourse" WHERE EXISTS (SELECT 1 FROM "teacherof" WHERE "teacherof"."teacherof_2" = "takescourse"."takescourse_2" 
+            // AND EXISTS (SELECT 1 FROM "worksfor" WHERE "worksfor"."worksfor_1" = "teacherof"."teacherof_1")));
+            return executionTimes;
+            
+        } catch (Exception e) {
+            for(String query:queries){
+                System.out.println(query);
+            }
+            Monitor.logINFO("Python CTE查询执行失败: " + e.getMessage());
+            return new long[]{-1, -1, -1};
+        } finally {
+            if (tempConfigFile != null) {
+                cleanupTempCTEFiles(tempConfigFile);
+            }
+        }
+    }
+
+    public long[] run_queries_cte_python(String[] queries) throws Exception {
+        String tempConfigFile = null;
+        try {
+            close_connection();
+            tempConfigFile = createTempCTEConfigFile(queries);
+            String pythonScriptPath = "/NewData/mjh/KR/QC/QueryComp_1/py_script/query_evaluation_cte.py";
+            String[] command = {"python", pythonScriptPath, tempConfigFile};
+            ProcessBuilder processBuilder = new ProcessBuilder(command);
+            processBuilder.redirectErrorStream(true);
+            
+            Process process = processBuilder.start();
+            StringBuilder output = new StringBuilder();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    output.append(line).append("\n");
+                }
+            }
+            int exitCode = process.waitFor();
+            
+            if (exitCode != 0) {
+                throw new Exception("Fail exitcode: : " + exitCode + "\noutput: " + output.toString());
+            }
+            long[] executionTimes = parseDetailedExecutionTime(output.toString());
+            recover_connection();
+            
+            return executionTimes;
+            
+        } catch (Exception e) {
+            Monitor.logINFO("Fail: " + e.getMessage());
+            try {
+                recover_connection();
+            } catch (Exception recoveryException) {
+                Monitor.logINFO("recover failed: " + recoveryException.getMessage());
+            }
+            return new long[]{-1, -1, -1};
+        } finally {
+            if (tempConfigFile != null) {
+                cleanupTempCTEFiles(tempConfigFile);
+            }
+        }
+    }
+
+    private String createTempCTEConfigFile(String[] queries) throws Exception {
+        String tempDir = System.getProperty("java.io.tmpdir");
+        String configFileName = "cte_query_eval_config_" + System.currentTimeMillis() + ".json";
+        String configFilePath = tempDir + File.separator + configFileName;
+        String queryFileName = "cte_temp_query_" + System.currentTimeMillis() + ".sql";
+        String queryFilePath = tempDir + File.separator + queryFileName;
+        
+        try (FileWriter queryWriter = new FileWriter(queryFilePath)) {
+            for (String query : queries) {
+                queryWriter.write(query + "\n");
+            }
+        }
+
+        StringBuilder configContent = new StringBuilder();
+        configContent.append("{\n");
+        configContent.append("  \"database\": {\n");
+        if ("pg".equalsIgnoreCase(db_type)) {
+            configContent.append("    \"type\": \"pg\",\n");
+            String[] dbParts = db_info.split("/");
+            String hostPort = dbParts[0];
+            String baseDb  = dbParts.length > 1 ? dbParts[1] : "postgres";
+            String[] hp    = hostPort.split(":");
+            String host    = hp[0];
+            String port    = hp.length > 1 ? hp[1] : "5432";
+            String dsn     = "host=" + host + " port=" + port + " dbname=" + baseDb + "_" + id;
+            configContent.append("    \"dsn\": \"").append(dsn).append("\",\n");
+        } else {
+            configContent.append("    \"type\": \"duckdb\",\n");
+            configContent.append("    \"path\": \"").append(db_info).append("/db").append(id).append("\",\n");
+        }
+        // configContent.append("    \"threads\": ").append(threadCount).append(",\n");
+        configContent.append("    \"cache\": \""+cache+"\"\n");
+        configContent.append("  },\n");
+        configContent.append("  \"queries\": {\n");
+        configContent.append("    \"cte_query_file\": \"").append(queryFilePath).append("\"\n");
+        configContent.append("  }\n");
+        configContent.append("}");
+        try (FileWriter writer = new FileWriter(configFilePath)) {
+            writer.write(configContent.toString());
+        }
+        
+        return configFilePath;
+    }
+
+    private String createTempPythonConfig(String query) throws Exception {
+        String tempDir = System.getProperty("java.io.tmpdir");
+        String configFileName = "query_eval_config_" + System.currentTimeMillis() + ".json";
+        String configFilePath = tempDir + File.separator + configFileName;
+
+        String queryFileName = "temp_query_" + System.currentTimeMillis() + ".sql";
+        String queryFilePath = tempDir + File.separator + queryFileName;
+        
+        try (FileWriter queryWriter = new FileWriter(queryFilePath)) {
+            queryWriter.write(query);
+        }
+
+        StringBuilder configContent = new StringBuilder();
+        configContent.append("{\n");
+        configContent.append("  \"database\": {\n");
+        if ("pg".equalsIgnoreCase(db_type)) {
+            configContent.append("    \"type\": \"pg\",\n");
+            String[] dbParts = db_info.split("/");
+            String hostPort = dbParts[0];
+            String baseDb  = dbParts.length > 1 ? dbParts[1] : "postgres";
+            String[] hp    = hostPort.split(":");
+            String host    = hp[0];
+            String port    = hp.length > 1 ? hp[1] : "5432";
+            String dsn     = "host=" + host + " port=" + port + " dbname=" + baseDb + "_" + id;
+            configContent.append("    \"dsn\": \"").append(dsn).append("\",\n");
+        } else {
+            configContent.append("    \"type\": \"duckdb\",\n");
+            configContent.append("    \"path\": \"").append(db_info).append("/db").append(id).append("\",\n");
+        }
+        // configContent.append("    \"threads\": ").append(threadCount).append(",\n");
+        configContent.append("    \"cache\": \""+cache+"\"\n");
+        configContent.append("  },\n");
+        configContent.append("  \"queries\": {\n");
+        configContent.append("    \"direct_query_file\": \"").append(queryFilePath).append("\"\n");
+        configContent.append("  }\n");
+        configContent.append("}");
+        // 写入配置文件
+        try (FileWriter writer = new FileWriter(configFilePath)) {
+            writer.write(configContent.toString());
+        }
+        
+        return configFilePath;
+    }
+    private String escapeJsonString(String str) {
+        return str.replace("\\", "\\\\")
+                 .replace("\"", "\\\"")
+                 .replace("\n", "\\n")
+                 .replace("\r", "\\r")
+                 .replace("\t", "\\t");
+    }
+    private long parseExecutionTime(String output) {
+        try {
+            String[] lines = output.split("\n");
+            for (String line : lines) {
+                if (line.contains("总执行时间:")) {
+                    String timeStr = line.replaceAll(".*总执行时间:\\s*([0-9]+)纳秒.*", "$1");
+                    return Long.parseLong(timeStr);
+                }
+            }
+            Monitor.logINFO("无法从Python输出中解析执行时间，输出: " + output);
+            return 0;
+        } catch (Exception e) {
+            Monitor.logINFO("解析执行时间失败: " + e.getMessage());
+            return 0;
+        }
+    }
+    private long[] parseDetailedExecutionTime(String output) {
+        try {
+            long[] times = new long[3];
+            String[] lines = output.split("\n");
+            
+            for (String line : lines) {
+                if (line.contains("物化查询执行时间:")) {
+                    String timeStr = line.replaceAll(".*物化查询执行时间:\\s*([0-9]+)纳秒.*", "$1");
+                    times[0] = Long.parseLong(timeStr);
+                } else if (line.contains("临时表创建时间:")) { 
+                    String timeStr = line.replaceAll(".*临时表创建时间:\\s*([0-9]+)纳秒.*", "$1");
+                    times[1] = Long.parseLong(timeStr);
+                } else if (line.contains("主查询执行时间:")) {
+                    String timeStr = line.replaceAll(".*主查询执行时间:\\s*([0-9]+)纳秒.*", "$1");
+                    times[2] = Long.parseLong(timeStr);
+                }
+            }
+            
+            if (times[0] == 0 && times[1] == 0 && times[2] == 0) {
+                Monitor.logINFO("无法从Python输出中解析详细执行时间，输出: " + output);
+                return new long[]{0, 0, 0};
+            }
+            
+            return times;
+            
+        } catch (Exception e) {
+            Monitor.logINFO("解析详细执行时间失败: " + e.getMessage());
+            return new long[]{0, 0, 0};
+        }
+    }
+    public static void cleanupSharedTempFiles() {
+    }
+
+    private void cleanupTempCTEFiles(String configFile) {
+        try {
+            File config = new File(configFile);
+            if (config.exists()) {
+                config.delete();
+            }
+            String tempDir = System.getProperty("java.io.tmpdir");
+            File tempDirFile = new File(tempDir);
+            File[] cteQueryFiles = tempDirFile.listFiles((dir, name) -> name.startsWith("cte_temp_query_") && name.endsWith(".sql"));
+            if (cteQueryFiles != null) {
+                for (File file : cteQueryFiles) {
+                    if (System.currentTimeMillis() - file.lastModified() < 60000) { 
+                        file.delete();
+                    }
+                }
+            }
+
+            File[] csvFiles = tempDirFile.listFiles((dir, name) -> name.startsWith("materialization_result_") && name.endsWith(".csv"));
+            if (csvFiles != null) {
+                for (File file : csvFiles) {
+                    if (System.currentTimeMillis() - file.lastModified() < 60000) {
+                        file.delete();
+                    }
+                }
+            }
+            File[] files = tempDirFile.listFiles((dir, name) -> name.startsWith("query_results_") && name.endsWith(".json"));
+            if (files != null) {
+                for (File file : files) {
+                    if (System.currentTimeMillis() - file.lastModified() < 60000) { 
+                        file.delete();
+                    }
+                }
+            }
+            
+            File[] timeFiles = tempDirFile.listFiles((dir, name) -> name.startsWith("query_results_") && name.endsWith("_time.txt"));
+            if (timeFiles != null) {
+                for (File file : timeFiles) {
+                    if (System.currentTimeMillis() - file.lastModified() < 60000) {
+                        file.delete();
+                    }
+                }
+            }
+            
+        } catch (Exception e) {
+            Monitor.logINFO("clear cte fail " + e.getMessage());
+        }
+    }
+    private void cleanupTempFiles(String configFile) {
+        try {
+            File config = new File(configFile);
+            if (config.exists()) {
+                config.delete();
+            }
+            String configFileName = config.getName();
+            String timestamp = null;
+            if (configFileName.startsWith("query_eval_config_") && configFileName.endsWith(".json")) {
+                timestamp = configFileName.substring("query_eval_config_".length(), configFileName.length() - 5);
+            }
+
+            if (timestamp != null) {
+                String tempDir = System.getProperty("java.io.tmpdir");
+                String queryFileName = "temp_query_" + timestamp + ".sql";
+                File queryFile = new File(tempDir, queryFileName);
+                if (queryFile.exists()) {
+                    queryFile.delete();
+                }
+            }
+            String tempDir = System.getProperty("java.io.tmpdir");
+            File tempDirFile = new File(tempDir);
+            File[] files = tempDirFile.listFiles((dir, name) -> name.startsWith("query_results_") && name.endsWith(".json"));
+            if (files != null) {
+                for (File file : files) {
+                    if (System.currentTimeMillis() - file.lastModified() < 60000) { 
+                        file.delete();
+                    }
+                }
+            }
+            
+            File[] timeFiles = tempDirFile.listFiles((dir, name) -> name.startsWith("query_results_") && name.endsWith("_time.txt"));
+            if (timeFiles != null) {
+                for (File file : timeFiles) {
+                    if (System.currentTimeMillis() - file.lastModified() < 60000) {
+                        file.delete();
+                    }
+                }
+            }
+            
+        } catch (Exception e) {
+            Monitor.logINFO("清理临时文件失败: " + e.getMessage());
+        }
+    }
 }
+

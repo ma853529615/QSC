@@ -9,20 +9,16 @@ import java.sql.Statement;
 import java.util.Properties;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 
 import org.duckdb.DuckDBConnection;
-
 
 public class ConnectionPool {
 
     private final BlockingQueue<Connection> connectionPool;
     private Connection primary_con;
 
-    public ConnectionPool(String db_info, String db_type, int poolSize, int id, boolean read_only) throws Exception{
-        this(db_info, db_type, poolSize, id, read_only, false);
-    }
-
-    public ConnectionPool(String db_info, String db_type, int poolSize, int id, boolean read_only, boolean reset) throws Exception {
+    public ConnectionPool(String db_info, String db_type, int poolSize, int id, boolean read_only, boolean recover) throws Exception {
         if(db_type.equals("duckdb")){
             File dir = new File(db_info);
             if (!dir.exists()) {
@@ -32,9 +28,9 @@ public class ConnectionPool {
             } else if (!dir.isDirectory()) {
                 throw new IOException("目标路径不是目录: " + db_info);
             }
-            if(!reset){
+            if(!recover){
                 File[] files = dir.listFiles();
-                if (files != null&&!reset) {
+                if (files != null&&!recover) {
                     for (File f : files) {
                         if (f.isFile()&&f.getName().startsWith("db"+id)) {
                             boolean deleted = f.delete();
@@ -48,24 +44,22 @@ public class ConnectionPool {
         }
 
         connectionPool = new LinkedBlockingQueue<>(poolSize);
-        
+
         String connUrl = null;
         primary_con = null;
         if (db_type.equals("duckdb")) {
             connUrl = "jdbc:duckdb:"  + db_info + "db" + id;
             Class.forName("org.duckdb.DuckDBDriver");
-            // connUrl = "jdbc:duckdb:";
+
             Properties Property = new Properties();
-            // if(read_only&&reset){
-            //     Property.setProperty("duckdb.read_only", "true");
-            // }
+
             Property.setProperty("memory_limit", "32GB");
             primary_con = DriverManager.getConnection(connUrl, Property);
         } else if (db_type.equals("pg")) {
             Class.forName("org.postgresql.Driver");
             connUrl = "jdbc:postgresql://" + db_info.split("/")[0]+"/postgres";
             try{
-                if(!reset){
+                if(!recover){
                     Connection global_conn = DriverManager.getConnection(connUrl);
                     Statement stmt = global_conn.createStatement();
                     stmt.executeUpdate("DROP DATABASE IF EXISTS "+ db_info.split("/")[1]+"_"+id+";");
@@ -81,10 +75,10 @@ public class ConnectionPool {
             throw new SQLException("Unsupported db type: " + db_type);
         }
 
-
         connectionPool.add(primary_con);
 
         if(read_only){
+            System.out.println("read_only=true，创建额外连接，poolSize: " + poolSize);
             if(db_type.equals("duckdb")){
                 DuckDBConnection conn = (DuckDBConnection) primary_con;
                 for (int i = 0; i < poolSize - 1; i++) {
@@ -99,7 +93,7 @@ public class ConnectionPool {
             }else{
                 throw new SQLException("Unsupported db type: " + db_type);
             }
-        }
+        } 
 
     }
 
@@ -108,7 +102,17 @@ public class ConnectionPool {
     }
 
     public Connection getConnection() throws InterruptedException {
-        return connectionPool.take();
+
+        Connection conn = connectionPool.poll(3, TimeUnit.SECONDS);
+        if (conn == null) {
+
+            if (primary_con != null && !connectionPool.contains(primary_con)) {
+                return primary_con;
+            }
+
+        }
+
+        return conn;
     }
 
     public void releaseConnection(Connection conn) {
@@ -122,4 +126,3 @@ public class ConnectionPool {
         }
     }
 }
-

@@ -2,7 +2,6 @@ package querycomp.util;
 
 import java.util.Arrays;
 
-// 内部包装类，仅在 ArrayTreeSet 中使用
 public class ArrayWrapper {
     private final int[] array;
 
@@ -12,7 +11,7 @@ public class ArrayWrapper {
 
     @Override
     public int hashCode() {
-        return Arrays.hashCode(array);  // 基于数组内容计算 hashCode
+        return Arrays.hashCode(array);  
     }
 
     @Override
@@ -20,7 +19,7 @@ public class ArrayWrapper {
         if (this == obj) return true;
         if (obj == null || getClass() != obj.getClass()) return false;
         ArrayWrapper that = (ArrayWrapper) obj;
-        return Arrays.equals(array, that.array);  // 基于数组内容判断相等性
+        return Arrays.equals(array, that.array);  
     }
 
     public int[] getArray() {

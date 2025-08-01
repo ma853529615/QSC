@@ -6,5 +6,3 @@ import java.sql.ResultSet;
 public interface QueryHandler<T> {
     T handle(ResultSet rs) throws Exception;
 }
-
-

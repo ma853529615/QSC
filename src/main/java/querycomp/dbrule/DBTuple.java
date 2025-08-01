@@ -5,11 +5,6 @@ public class DBTuple {
     private int relation = -1;
     public int arity;
 
-    public DBTuple(int[] data){
-        this.data = data;
-        this.relation = data[data.length-1];
-        this.arity = data.length-1;
-    }
     public void setRelationID(int relation){
         this.relation = relation;
     }
@@ -19,9 +14,6 @@ public class DBTuple {
     public int getdata(int index){
         assert index < arity: "Index out of bound";
         return data[index];
-    }
-    public int[] toArray(){
-        return data;
     }
 
     public int hashCode(){
@@ -37,14 +29,7 @@ public class DBTuple {
             if(t.arity != arity){
                 return false;
             }
-            // for(int i = 0; i < tuple.length; i++){
-            //     if(t.tuple[i] != tuple[i]){
-            //         return false;
-            //     }
-            // }
-            // if(t.hashCode() == hashCode()){
-            //     return true;
-            // }
+
             for(int i = 0; i < arity+1; i++){
                 if(t.data[i] != data[i]){
                     return false;

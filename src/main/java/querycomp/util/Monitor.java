@@ -12,37 +12,68 @@ public class Monitor {
     public static long extractTime = 0;
 
     public static long filterTime = 0;
-    
+
     public static long fusFilterTime = 0;
     public static long RuleEntailTime = 0;
     public static long RuleConfTime = 0;
-    public static long deltaTime = 0;
     public static long compressTime = 0;
     public static long ruleFilterTime = 0;
     public static long removeTime = 0;
     public static long iterRemoveTime = 0;
-    public static long rewriteTime = 0;
-    public static long queryTime = 0;
-    public static int[] threads = {1, 2, 4, 8, 16, 32, 64};
-    public static long singleQueryTime = 0;
-    public static long directQueryTime = 0;
-    public static long[] parallelQueryTime = new long[7];
-
+    public static long rewrite_time = 0;
+    public static long rewrite_cte_time = 0;
     public static long decompressTime = 0;
-    public static long tmp = 0;
+    public static long origin_time = 0;
+    public static long unionTime = 0;
+    public static long cte_rewrite_time = 0;
+    public static long cte_0_time = 0;
+    public static long cte_1_time = 0;
+    public static long cte_2_time = 0;
+    public static long test_unionTime = 0;
+    public static long test_originTime = 0;
+    public static long test_rewriteTime = 0;
+    public static long test_cte_rewriteTime = 0;
+    public static long test_cte_0_time = 0;
+    public static long test_cte_1_time = 0;
+    public static long test_cte_2_time = 0;
+
     public static String dumpPath = null;
     public static String basePath = null;
+    public static String specificPath = null;
     public static long optTime = 0;
     public static HashMap<String, String> queryTimeMap = new HashMap<String, String>();
-    public static HashMap<String, String> originQueryTimeMap = new HashMap<String, String>();
+    public static HashMap<String, String> queryTimeMap_test = new HashMap<String, String>();
+
     public static void setDumpPath(String path) {
-        // if the path not exist, create it
+
         File file = new File(path);
         if(!file.exists()) {
             file.mkdirs();
         }
         basePath = path;
         dumpPath = path + "/monitor.txt";
+        specificPath = path + "/specific_query_evaluation_2";
+        File specific_file = new File(specificPath);
+        if(specific_file.exists()){
+
+            File[] files = specific_file.listFiles();
+            for(File file_:files){
+                file_.delete();
+            }
+            specific_file.delete();
+        }
+        specific_file.mkdirs();
+    }
+    public static void dumpQueryInfo(String query_fn, String info) {
+        try{
+            String path = specificPath + "/" + query_fn + ".txt";
+            FileWriter fw = new FileWriter(path, true);
+            BufferedWriter bw = new BufferedWriter(fw);
+            bw.write(info + "\n");
+            bw.close();
+        } catch (IOException e) {   
+            e.printStackTrace();
+        }
     }
     public static void logINFO(String msg) {
         try{
@@ -62,79 +93,10 @@ public class Monitor {
     }
     public static void setQueryINFO(String query, String INFO) {
         queryTimeMap.put(query, INFO);
-    }   
-    public static void dumpQuerySpecific() throws IOException{
-        String path;
-        if(basePath == null) {
-            path = "./query_specific.txt";
-        }else{
-            path = basePath+"/query_specific_x_2"+".txt";
-        }
-        try(BufferedWriter bw = new BufferedWriter(new FileWriter(path))){
-            bw.write("query_name\tsingle\t1\t2\t4\t8\t16\t32\t64\toriginal\trewrite\t#queries\n");
-            for(String key:queryTimeMap.keySet()){
-                bw.write(key+"\t"+queryTimeMap.get(key));
-                bw.write("\n");
-            }
-        }catch(IOException e) {
-            throw e;
-        }
     }
-    public static void dumpQuerySpecific(int threads) throws IOException{
-        String path;
-        if(basePath == null) {
-            path = "./query_specific.txt";
-        }else{
-            path = basePath+"/query_specific_x_2"+".txt";
-        }
-        try(BufferedWriter bw = new BufferedWriter(new FileWriter(path))){
-            bw.write("query_name\tsingle\t1\t2\t4\t8\t16\t32\t64\toriginal\trewrite\t#queries\n");
-            for(String key:queryTimeMap.keySet()){
-                bw.write(key+"\t"+queryTimeMap.get(key));
-                bw.write("\n");
-            }
-        }catch(IOException e) {
-            throw e;
-        }
-    }
-    public static void dumpQuerySpecific(int threads, double supp) throws IOException{
-        String path;
-        path = "./query_specific"+supp+".txt";
-        // }else{
-        //     path = basePath+"/query_specific_x_2"+".txt";
-        // }
-        try(BufferedWriter bw = new BufferedWriter(new FileWriter(path))){
-            bw.write("query_name\tsingle\t1\t2\t4\t8\t16\t32\t64\toriginal\trewrite\t#queries\n");
-            for(String key:queryTimeMap.keySet()){
-                bw.write(key+"\t"+queryTimeMap.get(key));
-                bw.write("\n");
-            }
-        }catch(IOException e) {
-            throw e;
-        }
-    }
-    public static void reset(){
-        loadTime = 0;
-        extractTime = 0;
-        filterTime = 0;
-        fusFilterTime = 0;
-        RuleEntailTime = 0;
-        RuleConfTime = 0;
-        compressTime = 0;
-        ruleFilterTime = 0;
-        removeTime = 0;
-        iterRemoveTime = 0;
-        rewriteTime = 0;
-        queryTime = 0;
-        singleQueryTime = 0;
-        directQueryTime = 0;
-        parallelQueryTime = new long[7];
-        decompressTime = 0;
-        queryTimeMap.clear();
-        originQueryTimeMap.clear();
-    }
+
     public static void dump(){
-        // open the dump file and append the new data to it
+
         try {
             String path;
             if(dumpPath == null) {
@@ -157,33 +119,16 @@ public class Monitor {
             bw.write("removeTime: " + removeTime + "\n");
             bw.write("iterRemoveTime: " + iterRemoveTime + "\n");
             bw.write("optimizeTime: " + optTime + "\n");
-            bw.write("rewriteTime: " + rewriteTime + "\n");
-            bw.write("queryTime: " + queryTime + "\n");
-            bw.write("singleQueryTime: " + singleQueryTime + "\n");
-            bw.write("originQueryTime: " + directQueryTime + "\n");
-            bw.write("deltaTime: " + deltaTime + "\n");
-            for(int i = 0; i < parallelQueryTime.length; i++) {
-                bw.write("parallelQueryTime" + threads[i] + ": " + parallelQueryTime[i] + "\n");
-            }
-            bw.write("decompressTime: " + decompressTime + "\n");
-            // for(String query : queryTimeMap.keySet()) {
-            //     bw.write(query + ": " + queryTimeMap.get(query) +" "+  originQueryTimeMap.get(query)+"\n");
-            // }
+            printQueryLatency();
+
             bw.close();
         } catch (IOException e) {
             e.printStackTrace();
         }
-    
+
     }
-    public static double getQueryLatency(int threads){
-        return parallelQueryTime[threads];
-    }
-    public static List<Double> getQueryLatency(){
-        List<Double> list = new ArrayList<>();
-        for(int i = 0; i < parallelQueryTime.length; i++) {
-            list.add((double)parallelQueryTime[i]);
-        }
-        return list;
+    public static double getQueryLatency(){
+        return unionTime;
     }
     public static void printQueryLatency() {
         String path;
@@ -192,28 +137,45 @@ public class Monitor {
         }else{
             path = dumpPath;
         }
-        
+
         try(FileWriter fw = new FileWriter(path, true);
         BufferedWriter bw = new BufferedWriter(fw);) {
-            
-            bw.write("rewriteTime: " + rewriteTime + "\n");
-            bw.write("queryTime: " + queryTime + "\n");
-            bw.write("singleQueryTime: " + singleQueryTime + "\n");
-            bw.write("originQueryTime: " + directQueryTime + "\n");
-            for(int i = 0; i < parallelQueryTime.length; i++) {
-                bw.write("parallelQueryTime" + threads[i] + ": " + parallelQueryTime[i] + "\n");
-            
-        }
+            bw.write("decompressTime: " + decompressTime + "\n");
+            bw.write("rewriteTime: " + rewrite_time + "\n");
+            bw.write("rewrite_cte_time: " + rewrite_cte_time + "\n");
+            bw.write("origin_time: " + origin_time + "\n");
+            bw.write("unionTime: " + unionTime + "\n");
+            bw.write("cte_rewrite_time: " + cte_rewrite_time + "\n");
+            bw.write("cte_0_time: " + cte_0_time + "\n");
+            bw.write("cte_1_time: " + cte_1_time + "\n");
+            bw.write("cte_2_time: " + cte_2_time + "\n");
+            bw.write("test_unionTime: " + test_unionTime + "\n");
+            bw.write("test_originTime: " + test_originTime + "\n");
+            bw.write("test_rewriteTime: " + test_rewriteTime + "\n");
+            bw.write("test_cte_rewriteTime: " + test_cte_rewriteTime + "\n");
+            bw.write("test_cte_0_time: " + test_cte_0_time + "\n");
+            bw.write("test_cte_1_time: " + test_cte_1_time + "\n");
+            bw.write("test_cte_2_time: " + test_cte_2_time + "\n");
         } catch (IOException e) {
-            // TODO Auto-generated catch block
+
             e.printStackTrace();
         }
     }
     public static void resetQueryLatency() {
-        rewriteTime = 0;
-        queryTime = 0;
-        singleQueryTime = 0;
-        directQueryTime = 0;
-        parallelQueryTime = new long[7];
+        rewrite_time = 0;
+        rewrite_cte_time = 0;
+        origin_time = 0;
+        unionTime = 0;
+        cte_rewrite_time = 0;
+        cte_0_time = 0;
+        cte_1_time = 0;
+        cte_2_time = 0;
+        test_unionTime = 0;
+        test_originTime = 0;
+        test_rewriteTime = 0;
+        test_cte_rewriteTime = 0;
+        test_cte_0_time = 0;
+        test_cte_1_time = 0;
+        test_cte_2_time = 0;
     }
 }

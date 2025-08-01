@@ -1,12 +1,9 @@
 package querycomp.dbrule;
 
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Vector;
-
-import querycomp.dbrule.*;
 
 public class DBRule {
     public int id;
@@ -14,22 +11,31 @@ public class DBRule {
     public Predicate head;
     public Vector<Predicate> body = new Vector<Predicate>();
     public HashMap<String, String> all_Variables_map = new HashMap<String, String>();
-    protected HashMap<String, Vector<Argument>> joinMap = new HashMap<String, Vector<Argument>>();
-    protected Vector<Argument> constantsBody = new Vector<Argument>();
-    protected Vector<Predicate> allPredicates = new Vector<Predicate>();
+    public HashMap<String, Vector<Argument>> joinMap = new HashMap<String, Vector<Argument>>();
+    public Vector<Argument> constantsBody = new Vector<Argument>();
+    public Vector<Predicate> allPredicates = new Vector<Predicate>();
+
+    private Integer forcedMainTableIndex = null;
 
     public DBRule(String rule, int id){
         this.id = id;
-        String[] parts = rule.replace(".", "").split(":-");
+        if(rule.endsWith(".")){
+            rule = rule.substring(0, rule.length()-1);
+        }
+        String[] parts = rule.split(":-");
         String head_string = parts[0].trim();
         String[] body_strings = parts[1].trim().split(", ");
-        // head_string is formated as "functor(arg1, arg2, ...)", it may has the constant in the arg, like "functor(1, arg1, ...)"
-        // we view a item as a constant if it is not a digital
-        // get all the functor, args and constants in the head, and store thier positions
+
         String[] head_parts = head_string.split("\\(");
         String head_functor = head_parts[0].trim();
-        String[] head_args = head_parts[1].trim().split("\\)")[0].split(",");
-        // construct the Argument array for the head
+        String[] head_args;
+        try{
+            head_args = head_parts[1].trim().split("\\)")[0].split(",");
+        }catch(Exception e){
+            System.out.println("head_string: "+head_string);
+            head_args = head_parts[1].trim().split("\\)")[0].split(",");
+        }
+
         Vector<Argument> head_args_array = new Vector<Argument>();
         Integer pred_id = 0;
         for(int i = 0; i < head_args.length; i++){
@@ -37,9 +43,9 @@ public class DBRule {
             if(!Argument.checkVariable(arg)){
 
                 head_args_array.add(new Argument(arg, true, pred_id, i));
-                //constants.add(head_args_array[i]);
+
             }else{
-                // argSet.add(arg);
+
                 if(!all_Variables_map.containsKey(arg)){
                     all_Variables_map.put(arg, Argument.DEFAULT_VAR_ARRAY.get(all_Variables_map.size()));
                 }
@@ -47,10 +53,10 @@ public class DBRule {
                 if (!joinMap.containsKey(head_args_array.get(i).name)){
                     joinMap.put(head_args_array.get(i).name, new Vector<Argument>());
                 }
-                //joinMap.get(head_args_array[i]).add(head_args_array[i]);
+
             }
         }
-    
+
         pred_id++;
         head = new Predicate(head_functor, (Argument[])head_args_array.toArray(new Argument[head_args_array.size()]));
         allPredicates.add(head);
@@ -67,7 +73,7 @@ public class DBRule {
                 System.out.println("body_string: "+body_string);
             }
             if(body_functor.contains("=")){
-                
+
                 String constant = "";
                 int k = 0;
                 for(String arg: body_args){
@@ -76,7 +82,7 @@ public class DBRule {
                         continue;
                     }
                     int i = 0;
-                    
+
                     for(String argh:head_args){
                         if(arg.equals(argh)){
                             k=i;
@@ -93,18 +99,17 @@ public class DBRule {
                 String arg = body_args[i];
                 if(!Argument.checkVariable(arg)){
 
-                    // body_args_array.add(new Argument(all_Variables_map.get(arg), false, pred_id, i));
                     body_args_array.add(new Argument(arg, true, pred_id, i));
                     try{
                         constantsBody.add(body_args_array.get(i));                }catch(Exception e){
                         System.out.println("body_args_array.get(i).name: "+body_args_array.get(i).name);
                     }
                 }else{
-                    // argSet.add(arg);
+
                     if(!all_Variables_map.containsKey(arg)){
                         all_Variables_map.put(arg, Argument.DEFAULT_VAR_ARRAY.get(all_Variables_map.size()));
                     }
-                    // body_args_array.add(new Argument(arg, false, pred_id, i));
+
                     body_args_array.add(new Argument(all_Variables_map.get(arg), false, pred_id, i));
                     try{
                         if (!joinMap.containsKey(body_args_array.get(i).name)){
@@ -116,9 +121,9 @@ public class DBRule {
                     joinMap.get(body_args_array.get(i).name).add(body_args_array.get(i));
                 }
             }
-            
+
             pred_id++;
-            // if has duplicate predicates, tag it and record its duplicate index
+
             if(!predcnt.containsKey(body_functor)){
                 predcnt.put(body_functor, 1);
             }else{
@@ -128,7 +133,7 @@ public class DBRule {
             allPredicates.add(pred);
             body.add(pred);
         }
-        //set the duplicate index in the predicate
+
         for (Predicate pred : body){
             Integer cunt = predcnt.get(pred.functor);
             if(cunt>1){            
@@ -140,17 +145,26 @@ public class DBRule {
     public void setRuleId(int id){
         this.id = id;
     }
-    public boolean hasDuplicatePredicates(){
-        HashSet<String> predSet = new HashSet<String>();
-        for (Predicate pred : allPredicates){
-            if (predSet.contains(pred.functor)){
-                return true;
+
+    public void replaceConstantsWithMap(HashMap<String, Integer> entity_map){
+
+         for(int i = 0; i < head.args.length; i++){
+            if(head.args[i].isConstant){
+                try{
+                    head.args[i].name = entity_map.get(head.args[i].name).toString();
+                }catch(Exception e){
+                    System.out.println("head.args[i].name: "+head.args[i].name);
+                }
             }
-            predSet.add(pred.functor);
-        }
-        return false;
+         }
+         for(Predicate pred : body){
+            for(int i = 0; i < pred.args.length; i++){
+                if(pred.args[i].isConstant){
+                    pred.args[i].name = entity_map.get(pred.args[i].name).toString();
+                }
+            }
+         }
     }
-    
     @Override
     public String toString(){
         String str = head.functor + "(";
@@ -177,24 +191,7 @@ public class DBRule {
         }
         return str;
     }
-    public int[] toString_int(HashMap<String, Integer> relation_map){
-        Vector<Integer> rule_int = new Vector<Integer>();   
-        rule_int.add(relation_map.get(head.functor));
-        for (int i = 0; i < head.args.length; i++){
-            rule_int.add(head.args[i].toInt());
-        }
-        for (int i = 0; i < body.size(); i++){
-            Predicate pred = body.get(i);
-            for (int j = 0; j < pred.args.length; j++){
-                rule_int.add(head.args[i].toInt());
-            }
-        }
-        int[] rule_int_array = new int[rule_int.size()];
-        for (int i = 0; i < rule_int.size(); i++){
-            rule_int_array[i] = rule_int.get(i);
-        }
-        return rule_int_array;
-    }
+
     public String toString_Map(String[] mapping){
         String str = head.functor + "(";
         for (int i = 0; i < head.args.length; i++){
@@ -231,26 +228,7 @@ public class DBRule {
         str2.replace(":", "$");
         return str+str2;
     }
-    protected Vector<Vector<Argument>> getHeadJoins(){
-        Vector<Vector<Argument>> joins = new Vector<Vector<Argument>>();
-        for (Map.Entry<String, Vector<Argument>> entry : joinMap.entrySet()){
-            Vector<Argument> join_arg = entry.getValue();
-            Vector<Argument> join = new Vector<Argument>();
 
-            if(join_arg.size() >=2 || (join_arg.get(0).predicate_id == 0&&join_arg.size() >= 1)){
-                for(Argument arg: join_arg){
-                    if(arg.predicate_id>0){   
-                        join.add(arg);
-                    }
-                }
-                joins.add(join);
-            }
-
-        }
-        return joins;
-    }
-    // get the body joins
-    // only return the joins has at least 2 arguments
     protected Vector<Vector<Argument>> getJoins(){
         Vector<Vector<Argument>> joins = new Vector<Vector<Argument>>();
         for (Map.Entry<String, Vector<Argument>> entry : joinMap.entrySet()){
@@ -268,96 +246,10 @@ public class DBRule {
         }
         return joins;
     }
-    // TODO: duplicate table name
-    public String inferRuleAndUpdateTarget(DBRule rule, Predicate target_pred, String target_column, String value){
-        String rule_sql = rule.rule2SQL(true, false);
-        String sql = "UPDATE "+target_pred.functor+" SET "+target_column+"=";
-        if(target_column.equals("count")){
-            sql += target_column+"+1";
-        }else{
-            sql += "\'"+value+"\'";
-        }
-        sql += " WHERE EXISTS "+ "(SELECT 1 FROM ("+rule_sql+") AS temp WHERE ";
-        String[] target_columns = target_pred.getColumns();
-        for(int i = 0; i < target_columns.length; i++){
-            sql += target_pred.functor+"."+target_columns[i]+"=temp."+rule.head.functor+"_"+(i+1);
-            if(i < target_columns.length - 1){
-                sql += " AND ";
-            }
-        }
-        sql += ");";
-        return sql;
-    }
-    // make sure the infered head is exsit in the db
-    public String rule2SQL_where_head(boolean tag){
-        String sql = " FROM ";
-       // get the body functors
-       for (int i = 0; i < body.size(); i++){
-           Predicate pred = body.get(i);
-           sql += pred.fromCls();
-           if (i < body.size() - 1){
-               sql += ", ";
-           }
-       }
-       String where_cls = "";
-       where_cls += " WHERE ";
-       // get the joins
-       Vector<Vector<Argument>> joins = getHeadJoins();
-       for (int i = 0; i < joins.size(); i++){
-           Vector<Argument> join = joins.get(i);
-           Argument arg1 = join.get(0);
-           Predicate pred1 = allPredicates.get(arg1.predicate_id);
-           for(int j = 1; j < join.size(); j++){
-               Argument arg = join.get(j);
-               Predicate pred = allPredicates.get(arg.predicate_id);
-               where_cls += (pred.bodySelCls()+"."+pred.functor + "_" + (arg.position+1) + " = " + pred1.bodySelCls()+"."+pred1.functor + "_" + (arg1.position+1));
-               if ((j < join.size() - 1)||(i < joins.size() - 1)){
-                   where_cls += " AND ";
-               }
-               // where_cls += " AND ";
-           }
-       }
-       
-       // get all the constants predicates 
-       if(constantsBody.size() > 0 & !(where_cls.endsWith("AND ")) & joins.size() > 0){
-               where_cls += " AND ";
-       }
-       for (int i = 0; i < constantsBody.size(); i++){
-           Argument constant = constantsBody.get(i);
-           Predicate pred = allPredicates.get(constant.predicate_id);
-           where_cls += (pred.bodySelCls()+"."+pred.functor + "_" + (constant.position+1) + " = "  + constant.name);
-           if (i < constantsBody.size() - 1){
-               where_cls += " AND ";
-           }
-       }
-
-       if(tag){
-           if(!(where_cls.endsWith("AND ") || where_cls.endsWith("WHERE "))){
-               where_cls += " AND ";
-           }
-           for (int i = 0; i < body.size(); i++){
-               Predicate pred = body.get(i);
-               where_cls += pred.bodySelCls() + ".exists = 1";
-               if (i < body.size() - 1){
-                   where_cls += " AND ";
-               }
-           }
-       }
-       // if (!(joins.size() == 0 && constantsBody.size() == 0 && !tag && !has_target)){
-       //     sql += where_cls;
-       // }
-       while(where_cls.endsWith("AND ")){
-           where_cls = where_cls.substring(0, where_cls.length()-5);
-       }
-       if(!where_cls.equals(" WHERE ")){
-           sql += where_cls;
-       }
-       return sql;
-   }
 
     public String rule2SQL_where(boolean tag){
     String sql = " FROM ";
-       // get the body functors
+
        for (int i = 0; i < body.size(); i++){
            Predicate pred = body.get(i);
            sql += pred.getSQLName();
@@ -367,7 +259,7 @@ public class DBRule {
        }
        String where_cls = "";
        where_cls += " WHERE ";
-       // get the joins
+
        Vector<Vector<Argument>> joins = getJoins();
        for (int i = 0; i < joins.size(); i++){
            Vector<Argument> join = joins.get(i);
@@ -380,11 +272,10 @@ public class DBRule {
                if ((j < join.size() - 1)||(i < joins.size() - 1)){
                    where_cls += " AND ";
                }
-               // where_cls += " AND ";
+
            }
        }
-       
-       // get all the constants predicates 
+
        if(constantsBody.size() > 0 & !(where_cls.endsWith("AND ")) & joins.size() > 0){
                where_cls += " AND ";
        }
@@ -409,9 +300,7 @@ public class DBRule {
                }
            }
        }
-       // if (!(joins.size() == 0 && constantsBody.size() == 0 && !tag && !has_target)){
-       //     sql += where_cls;
-       // }
+
        while(where_cls.endsWith("AND ")){
            where_cls = where_cls.substring(0, where_cls.length()-5);
        }
@@ -420,93 +309,6 @@ public class DBRule {
        }
        return sql;
    }
-    public String rule2SQL_where(boolean tag, int[] target_gold){
-         String sql = " FROM ";
-        // get the body functors
-        for (int i = 0; i < body.size(); i++){
-            Predicate pred = body.get(i);
-            sql += pred.fromCls();
-            if (i < body.size() - 1){
-                sql += ", ";
-            }
-        }
-        String where_cls = "";
-        where_cls += " WHERE ";
-        // get the joins
-        Vector<Vector<Argument>> joins = getJoins();
-        for (int i = 0; i < joins.size(); i++){
-            Vector<Argument> join = joins.get(i);
-            Argument arg1 = join.get(0);
-            Predicate pred1 = allPredicates.get(arg1.predicate_id);
-            for(int j = 1; j < join.size(); j++){
-                Argument arg = join.get(j);
-                Predicate pred = allPredicates.get(arg.predicate_id);
-                where_cls += (pred.bodySelCls()+"."+pred.functor + "_" + (arg.position+1) + " = " + pred1.bodySelCls()+"."+pred1.functor + "_" + (arg1.position+1));
-                if ((j < join.size() - 1)||(i < joins.size() - 1)){
-                    where_cls += " AND ";
-                }
-                // where_cls += " AND ";
-            }
-        }
-
-        
-        // get all the constants predicates 
-        if(constantsBody.size() > 0 & !(where_cls.endsWith("AND ")) & joins.size() > 0){
-                where_cls += " AND ";
-        }
-        for (int i = 0; i < constantsBody.size(); i++){
-            Argument constant = constantsBody.get(i);
-            Predicate pred = allPredicates.get(constant.predicate_id);
-            where_cls += (pred.bodySelCls()+"."+pred.functor + "_" + (constant.position+1) + " = "  + constant.name);
-            if (i < constantsBody.size() - 1){
-                where_cls += " AND ";
-            }
-        }
-
-        if(tag){
-            if(!(where_cls.endsWith("AND ") || where_cls.endsWith("WHERE "))){
-                where_cls += " AND ";
-            }
-            for (int i = 0; i < body.size(); i++){
-                Predicate pred = body.get(i);
-                where_cls += pred.bodySelCls() + ".exists = 1";
-                if (i < body.size() - 1){
-                    where_cls += " AND ";
-                }
-            }
-        }
-
- 
-        // get the head Arguments and Constant
-        Argument[] head_args = head.args;
-        where_cls += " AND ";
-        for (int i = 0; i < head_args.length; i++){
-            Argument arg = head_args[i];
-            if (!arg.isConstant){
-                try{
-                    Argument target_arg = joinMap.get(arg.name).get(0);
-                    Predicate target_pred = allPredicates.get(target_arg.predicate_id);
-                    where_cls += (target_pred.bodySelCls()+"."+target_pred.functor+'_'+(target_arg.position+1)+"= " + target_gold[i]);
-                }catch(Exception e){
-                    System.out.println("arg.name: "+arg.name);
-                }
-            }
-            if (i < head_args.length - 1){
-                where_cls += " AND ";
-            }
-        }
-        // if (!(joins.size() == 0 && constantsBody.size() == 0 && !tag && !has_target)){
-        //     sql += where_cls;
-        // }
-        while(where_cls.endsWith("AND ")){
-            where_cls = where_cls.substring(0, where_cls.length()-5);
-        }
-        if(!where_cls.equals(" WHERE ")){
-            sql += where_cls;
-        }
-        return sql;
-    }
-    // TODO: duplicate table name
 
     public HashMap<String, String> getTarget2bodyColumns(){
         HashMap<String, String> target2bodyColumns = new HashMap<String, String>();
@@ -522,113 +324,12 @@ public class DBRule {
         }
         return target2bodyColumns;
     }
-    public String query2SQL(){
-        String sql = "SELECT ";
-        sql += " * ";
-        sql += " FROM ";
-        // get the body functors
-        for (int i = 0; i < body.size(); i++){
-            Predicate pred = body.get(i);
-            sql += pred.fromCls();
-            if (i < body.size() - 1){
-                sql += ", ";
-            }
-        }
-        String where_cls = "";
-        where_cls += " WHERE ";
-        // get the joins
-        Vector<Vector<Argument>> joins = getJoins();
-        for (int i = 0; i < joins.size(); i++){
-            Vector<Argument> join = joins.get(i);
-            Argument arg1 = join.get(0);
-            Predicate pred1 = allPredicates.get(arg1.predicate_id);
-            for(int j = 1; j < join.size(); j++){
-                Argument arg = join.get(j);
-                Predicate pred = allPredicates.get(arg.predicate_id);
-                where_cls += (pred.bodySelCls()+"."+pred.functor + "_" + (arg.position+1) + " = " + pred1.bodySelCls()+"."+pred1.functor + "_" + (arg1.position+1));
-                if (j < join.size() - 1){
-                    where_cls += " AND ";
-                }
-            }
-        }
-        // get all the constants predicates 
-        for (int i = 0; i < constantsBody.size(); i++){
 
-            Argument constant = constantsBody.get(i);
-            Predicate pred = allPredicates.get(constant.predicate_id);
-            where_cls += (pred.bodySelCls()+"."+pred.functor + "_" + (constant.position+1) + " = " + "\'" + constant.name + "\'");
-            if (i < constantsBody.size() - 1){
-                where_cls += " AND ";
-            }
-        }
-        // for all the body predicates, the exists column must be 1
-        for (int i = 0; i < body.size(); i++){
-            Predicate pred = body.get(i);
-            where_cls += " AND " + pred.bodySelCls() + ".exists = 1";
-        }
-
-        
-        if (!(joins.size() == 0 && constantsBody.size() == 0)){
-            sql += where_cls;
-        }
-        // sql += ";";
-        return sql;
-    }
-    public String ruleHead2SQL_tmp(){
-        // Argument:
-        // tag: whether to add the tag "exists = 1" in the where clause
-        // query: whether to query the body predicates
-        // target_gold: confirm the query result is consistent with the target_gold. actually, the constant in the head is in the body. Its redundant.
-        String sql = "SELECT ";
-        String target_functor = head.functor;
-        // get the head Arguments and Constant
-        Argument[] head_args = head.args;
-        for (int i = 0; i < head_args.length; i++){
-            Argument arg = head_args[i];
-            if (arg.isConstant){
-                sql += ("\'" + arg.name+ "\'" + " AS " + target_functor + "_" + (i+1));
-            }else{
-                Argument target_arg;
-                try{
-                    target_arg = joinMap.get(arg.name).get(0);
-                    Predicate target_pred = allPredicates.get(target_arg.predicate_id);
-                    sql += (target_pred.bodySelCls()+"."+target_pred.functor+'_'+(target_arg.position+1) + " AS " + target_functor + "_" + (i+1));
-                    
-                }catch(Exception e){
-                    System.out.println("arg.name: " + arg.name);
-                }
-            }
-            if (i < head_args.length - 1){
-                sql += ", ";
-            }
-        }
-
-        String outer_sql = "SELECT ";
-        for(int j = 0; j < head_args.length; j++){
-            outer_sql += "TMP."+target_functor + "_" + (j+1) + " AS " + "tmp_" + (j+1);
-            outer_sql += ", ";
-        }
-        outer_sql += "\'"+head.functor+"\' AS source_table FROM (";
-    
-        sql += rule2SQL_where(false);
-        String sql_outer = outer_sql + sql + ") AS TMP WHERE EXISTS ( SELECT 1 FROM " + target_functor + " WHERE";
-        // the where clause is formed like: where target_functor_1 = TMP.target_functor_1 AND target_functor_2 = TMP.target_functor_2 AND ...)
-        for (int i = 0; i < head_args.length; i++){
-            sql_outer += " " + target_functor + "_" + (i+1) + " = TMP." + target_functor + "_" + (i+1);
-            if (i < head_args.length - 1){
-                sql_outer += " AND";
-            }
-        }
-        return sql_outer+" );";
-    }
     public String ruleHead2SQL_Set(){
-        /*
-         * query the infered tuple in head and body of rule.
-         */
+
         String sql = "SELECT ";
-        String target_functor = head.functor;
         Argument[] head_args = head.args;
-        for (int i = 0; i < head_args.length; i++){ // 
+        for (int i = 0; i < head_args.length; i++){ 
             Argument arg = head_args[i];
             if (arg.isConstant){
                 sql += (arg.getName() + " AS " + head.getSoleColumnName(i));
@@ -660,19 +361,16 @@ public class DBRule {
         if(sql.equals("SELECT ")){
             sql += " * ";
         }
-    
+
         sql += rule2SQL_where(false);
         return sql;
     }
 
     public String ruleHead2SQL(int pad, int rule_id){
-        // Argument:
-        // tag: whether to add the tag "exists = 1" in the where clause
-        // query: whether to query the body predicates
-        // target_gold: confirm the query result is consistent with the target_gold. actually, the constant in the head is in the body. Its redundant.
+
         String sql = "SELECT ";
         String target_functor = head.functor;
-        // get the head Arguments and Constant
+
         Argument[] head_args = head.args;
         if(rule_id>=0){
             sql+= rule_id + " AS rule_id, ";
@@ -690,7 +388,6 @@ public class DBRule {
                 }catch(Exception e){
                     System.out.println("arg.name: " + arg.name);
                 }
-                
 
             }
             if (i < head_args.length - 1){
@@ -705,7 +402,7 @@ public class DBRule {
                 sql += ", ";
             }
         }
-        // if the number of target columns less than pad, fill the rest with null
+
         for (int i = 0; i < pad - argSize(); i++){
             sql += "NULL AS pad_" + i;
             if (i < pad - argSize() - 1){
@@ -718,11 +415,11 @@ public class DBRule {
         if(sql.equals("SELECT ")){
             sql += " * ";
         }
-    
+
         sql += rule2SQL_where(false);
 
         String sql_outer = "SELECT * FROM (" + sql + ") AS TMP WHERE EXISTS ( SELECT 1 FROM " + target_functor + " WHERE";
-        // the where clause is formed like: where target_functor_1 = TMP.target_functor_1 AND target_functor_2 = TMP.target_functor_2 AND ...)
+
         for (int i = 0; i < head_args.length; i++){
             sql_outer += " " + target_functor + "_" + (i+1) + " = TMP." + target_functor + "_" + (i+1);
             if (i < head_args.length - 1){
@@ -732,21 +429,10 @@ public class DBRule {
         return sql_outer+" );";
     }
     public String estSQL(){
-        // SELECT   
-        //     takesCourse.takesCourse_1 AS memberOf_1,   
-        //     worksFor.worksFor_2 AS memberOf_2   
-        // FROM   
-        //     takesCourse,   
-        //     teacherOf,   
-        //     worksFor,   
-        //     memberOf   
-        // WHERE   
-        //     teacherOf.teacherOf_2 = takesCourse.takesCourse_2   
-        //     AND worksFor.worksFor_1 = teacherOf.teacherOf_1   
-        //     AND (memberOf.member_id = takesCourse.takesCourse_1 OR memberOf.member_id = worksFor.worksFor_2);
+
         String est_sql = "SELECT ";
         String target_functor = head.functor;
-        // get the head Arguments and Constant
+
         Argument[] head_args = head.args;
         for (int i = 0; i < head_args.length; i++){
             Argument arg = head_args[i];
@@ -767,7 +453,7 @@ public class DBRule {
             }
         }
         est_sql += " FROM ";
-        // get the body functors
+
         for (int i = 0; i < body.size(); i++){
             Predicate pred = body.get(i);
             est_sql += pred.fromCls();
@@ -777,7 +463,7 @@ public class DBRule {
         }
         est_sql += ", "+target_functor;
         String where_cls = " WHERE ";
-        // get the joins
+
         Vector<Vector<Argument>> joins = getJoins();
         for (int i = 0; i < joins.size(); i++){
             Vector<Argument> join = joins.get(i);
@@ -790,11 +476,10 @@ public class DBRule {
                 if ((j < join.size() - 1)||(i < joins.size() - 1)){
                     where_cls += " AND ";
                 }
-                // where_cls += " AND ";
+
             }
         }
-        
-        // get all the constants predicates 
+
         if(constantsBody.size() > 0 & !(where_cls.endsWith("AND ")) & joins.size() > 0){
                 where_cls += " AND ";
         }
@@ -806,10 +491,7 @@ public class DBRule {
                 where_cls += " AND ";
             }
         }
- 
-        // if (!(joins.size() == 0 && constantsBody.size() == 0 && !tag && !has_target)){
-        //     sql += where_cls;
-        // }
+
         while(where_cls.endsWith("AND ")){
             where_cls = where_cls.substring(0, where_cls.length()-5);
         }
@@ -830,34 +512,190 @@ public class DBRule {
             }
         }
         return est_sql;
-        // get the body functors
-        
-        // String est_sql = "(" + base_sql + ") INTERSECT ( SELECT * FROM " + head.functor;
-        // Argument[] head_args = head.args;
-        // for (int i = 0; i < head_args.length; i++){
-        //     Argument arg = head_args[i];
-        //     est_sql += (head.functor+"."+head.functor+'_'+(arg.position+1)+" = result." + head.functor + "_" + (i+1));
 
-        //     if (i < head_args.length - 1){
-        //         est_sql += " AND ";
-        //     }
-        // }
     }
 
     public String rule2SQL(boolean tag, boolean query){
-        // Argument:
-        // tag: whether to add the tag "exists = 1" in the where clause
-        // query: whether to query the body predicates
-        // target_gold: confirm the query result is consistent with the target_gold. actually, the constant in the head is in the body. Its redundant.
-        // produce form like :
-        // SELECT body1.functor_1 as target_func_1, body2.functor_2 as target_func_2, ... 
-        //  [if query]: SELECT body1.functor_1, body1.functor_2, body2.functor_1, body2.functor_2, ... 
-        //  FROM body1, body2 
-        //      WHERE body1.functor_1 = body2.functor_1 AND body1.functor_2 = body2.functor_2 AND ...
-        //          [if tag]: AND body1.exists = 1 AND body2.exists = 1 AND ...
+
+        return rule2SQL(tag, query, false);
+    }
+    public String rule2SQL_Neg(){
+
         String sql = "SELECT ";
-        if(query){ // query the body predicates
-            // rename the duplicate columns in body predicates
+
+        Argument[] head_args = head.args;
+        for (int i = 0; i < head_args.length; i++){
+            Argument arg = head_args[i];
+            if (arg.isConstant){
+                sql += ("\'" + arg.name + "\'" + " AS " + head.functor + "_" + (i+1));
+            }else{
+                Argument target_arg;
+                try{
+                    target_arg = joinMap.get(arg.name).get(0);
+                    Predicate target_pred = allPredicates.get(target_arg.predicate_id);
+                    sql += (target_pred.bodySelCls() + "." + target_pred.functor + "_" + (target_arg.position+1) + " AS " + head.functor + "_" + (i+1));
+                }catch(Exception e){
+                    System.out.println("arg.name: " + arg.name);
+                }
+            }
+            if (i < head_args.length - 1){
+                sql += ", ";
+            }
+        }
+
+        sql += " FROM ";
+        for (int i = 0; i < body.size(); i++){
+            Predicate pred = body.get(i);
+            sql += pred.fromCls();
+            if (i < body.size() - 1){
+                sql += ", ";
+            }
+        }
+
+        String where_cls = " WHERE ";
+
+        Vector<Vector<Argument>> joins = getJoins();
+        for (int i = 0; i < joins.size(); i++){
+            Vector<Argument> join = joins.get(i);
+            Argument arg1 = join.get(0);
+            Predicate pred1 = allPredicates.get(arg1.predicate_id);
+            for(int j = 1; j < join.size(); j++){
+                Argument arg = join.get(j);
+                Predicate pred = allPredicates.get(arg.predicate_id);
+                where_cls += (pred.bodySelCls() + "." + pred.functor + "_" + (arg.position+1) + " = " + pred1.bodySelCls() + "." + pred1.functor + "_" + (arg1.position+1));
+                if ((j < join.size() - 1) || (i < joins.size() - 1)){
+                    where_cls += " AND ";
+                }
+            }
+        }
+
+        if(constantsBody.size() > 0 && !(where_cls.endsWith("AND ")) && joins.size() > 0){
+            where_cls += " AND ";
+        }
+        for (int i = 0; i < constantsBody.size(); i++){
+            Argument constant = constantsBody.get(i);
+            Predicate pred = allPredicates.get(constant.predicate_id);
+            where_cls += (pred.bodySelCls() + "." + pred.functor + "_" + (constant.position+1) + " = " + constant.name);
+            if (i < constantsBody.size() - 1){
+                where_cls += " AND ";
+            }
+        }
+
+        if(!where_cls.equals(" WHERE ")){
+            where_cls += " AND ";
+        }
+
+        String notExistsSql = "NOT EXISTS (SELECT * FROM " + head.functor + " WHERE ";
+        for (int i = 0; i < head_args.length; i++){
+            Argument arg = head_args[i];
+            if (arg.isConstant){
+                notExistsSql += (head.functor + "." + head.functor + "_" + (i+1) + " = \'" + arg.name + "\'");
+            }else{
+                Argument target_arg;
+                try{
+                    target_arg = joinMap.get(arg.name).get(0);
+                    Predicate target_pred = allPredicates.get(target_arg.predicate_id);
+                    notExistsSql += (head.functor + "." + head.functor + "_" + (i+1) + " = " + target_pred.bodySelCls() + "." + target_pred.functor + "_" + (target_arg.position+1));
+                }catch(Exception e){
+                    System.out.println("arg.name: " + arg.name);
+                }
+            }
+            if (i < head_args.length - 1){
+                notExistsSql += " AND ";
+            }
+        }
+        notExistsSql += ")";
+
+        where_cls += notExistsSql;
+
+        while(where_cls.endsWith("AND ")){
+            where_cls = where_cls.substring(0, where_cls.length()-5);
+        }
+
+        if(!where_cls.equals(" WHERE ")){
+            sql += where_cls;
+        }
+
+        sql += " LIMIT 1";
+
+        return sql;
+    }
+    public String rule2SQL_supp(){
+
+        String sql = "SELECT DISTINCT ";
+        Argument[] head_args = head.args;
+
+        for (int i = 0; i < head_args.length; i++){
+            Argument arg = head_args[i];
+            if (arg.isConstant){
+                sql += ("'" + arg.name + "' AS " + head.functor + "_" + (i+1));
+            }else{
+                Argument target_arg;
+                try{
+                    target_arg = joinMap.get(arg.name).get(0);
+                    Predicate target_pred = allPredicates.get(target_arg.predicate_id);
+                    sql += (target_pred.bodySelCls() + "." + target_pred.functor + "_" + (target_arg.position+1) + " AS " + head.functor + "_" + (i+1));
+                }catch(Exception e){
+                    System.out.println("arg.name: " + arg.name);
+                }
+            }
+            if (i < head_args.length - 1){
+                sql += ", ";
+            }
+        }
+
+        sql += " FROM ";
+        for (int i = 0; i < body.size(); i++){
+            Predicate pred = body.get(i);
+            sql += pred.fromCls();
+            if (i < body.size() - 1){
+                sql += ", ";
+            }
+        }
+
+        String where_cls = " WHERE ";
+        Vector<Vector<Argument>> joins = getJoins();
+        for (int i = 0; i < joins.size(); i++){
+            Vector<Argument> join = joins.get(i);
+            Argument arg1 = join.get(0);
+            Predicate pred1 = allPredicates.get(arg1.predicate_id);
+            for(int j = 1; j < join.size(); j++){
+                Argument arg = join.get(j);
+                Predicate pred = allPredicates.get(arg.predicate_id);
+                where_cls += (pred.bodySelCls() + "." + pred.functor + "_" + (arg.position+1) + " = " + pred1.bodySelCls() + "." + pred1.functor + "_" + (arg1.position+1));
+                if ((j < join.size() - 1) || (i < joins.size() - 1)){
+                    where_cls += " AND ";
+                }
+            }
+        }
+
+        if(constantsBody.size() > 0 && !(where_cls.endsWith("AND ")) && joins.size() > 0){
+            where_cls += " AND ";
+        }
+        for (int i = 0; i < constantsBody.size(); i++){
+            Argument constant = constantsBody.get(i);
+            Predicate pred = allPredicates.get(constant.predicate_id);
+            where_cls += (pred.bodySelCls() + "." + pred.functor + "_" + (constant.position+1) + " = " + constant.name);
+            if (i < constantsBody.size() - 1){
+                where_cls += " AND ";
+            }
+        }
+
+        while(where_cls.endsWith("AND ")){
+            where_cls = where_cls.substring(0, where_cls.length()-5);
+        }
+        if(!where_cls.equals(" WHERE ")){
+            sql += where_cls;
+        }
+        return sql;
+    }
+
+    public String rule2SQL(boolean tag, boolean query, boolean single_var){
+
+        String sql = "SELECT DISTINCT ";
+
+        if(query){ 
+
             for (int i = 0; i < body.size(); i++){
                 Predicate pred = body.get(i);
                 for(int j = 0; j < pred.args.length; j++){
@@ -872,84 +710,152 @@ public class DBRule {
                 sql += " * ";
             }
         }
-        else{  // rename the query result to rule's head
+        else{  
             Argument[] head_args = head.args;
-            for (int i = 0; i < head_args.length; i++){
-                Argument arg = head_args[i];
-                if (arg.isConstant){
-                    sql += ( arg.getName() + " AS " + head.getSoleColumnName(i));
-                }else{
-                    Argument target_arg;
-                    try{
-                        target_arg = joinMap.get(arg.name).get(0);
-                        Predicate target_pred = allPredicates.get(target_arg.predicate_id);
-                        sql += (target_pred.getColumnName(target_arg.position) + " AS " + head.getSoleColumnName(i));
-                    }catch(Exception e){
-                        // System.out.println("arg.name: " + arg.name);
+            boolean hasSelectItems = false;
+
+            if(single_var){
+
+                for (int i = 0; i < head_args.length; i++){
+                    Argument arg = head_args[i];
+                    if (arg.isConstant){
+
+                        if(hasSelectItems){
+                            sql += ", ";
+                        }
+                        if(!head.getSoleColumnName(i).contains("?")){
+                            sql += ( arg.getName() + " AS " + head.getSoleColumnName(i));
+                        }else{
+                            sql +=  arg.getName();
+                        }
+                        hasSelectItems = true;
+                    }else{
+                        Argument target_arg;
+                        try{
+                            target_arg = joinMap.get(arg.name).get(0);
+                            Predicate target_pred = allPredicates.get(target_arg.predicate_id);
+                            if(hasSelectItems){
+                                sql += ", ";
+                            }
+                            if(!head.getColumnName(target_arg.position).contains("?")){
+                                sql += (target_pred.getColumnName(target_arg.position) + " AS " + head.getSoleColumnName(i));
+                            }else{
+                                sql += target_pred.getColumnName(target_arg.position);
+                            }
+                            hasSelectItems = true;
+                        }catch(Exception e){
+
+                        }
                     }
                 }
-                if (i < head_args.length - 1){
-                    sql += ", ";
+            } else {
+
+                for (int i = 0; i < head_args.length; i++){
+                    Argument arg = head_args[i];
+                    if (arg.isConstant){
+
+                        if(hasSelectItems){
+                            sql += ", ";
+                        }
+                        if(!head.getSoleColumnName(i).contains("?")){
+                            sql += ( arg.getName() + " AS " + head.getSoleColumnName(i));
+                        }else{
+                            sql +=  arg.getName();
+                        }
+                        hasSelectItems = true;
+                    }else{
+                        Argument target_arg;
+                        try{
+                            target_arg = joinMap.get(arg.name).get(0);
+                            Predicate target_pred = allPredicates.get(target_arg.predicate_id);
+                            if(hasSelectItems){
+                                sql += ", ";
+                            }
+                            if(!head.getColumnName(target_arg.position).contains("?")){
+                                sql += (target_pred.getColumnName(target_arg.position) + " AS " + head.getSoleColumnName(i));
+                            }else{
+                                sql += target_pred.getColumnName(target_arg.position);
+                            }
+                            hasSelectItems = true;
+                        }catch(Exception e){
+
+                            if(hasSelectItems){
+                                sql += ", ";
+                            }
+                            sql += "NULL AS " + head.getSoleColumnName(i);
+                            hasSelectItems = true;
+                        }
+                    }
                 }
+            }
+
+            if(!hasSelectItems){
+                sql += "1";
             }
         }
         sql += rule2SQL_where(tag);
-        // sql += ";";
+
         return sql;
     }
+    public String rule2SQLDelete(){
 
-    public String rule2SQL(boolean tag, boolean query, int[] target_gold){
-        // Argument:
-        // tag: whether to add the tag "exists = 1" in the where clause
-        // query: whether to query the body predicates
-        // target_gold: confirm the query result is consistent with the target_gold. actually, the constant in the head is in the body. Its redundant.
-        String sql = "SELECT ";
-        if(query){ // query the body predicates
-            // rename the duplicate columns in body predicates
-            for (int i = 0; i < body.size(); i++){
-                Predicate pred = body.get(i);
-                for(int j = 0; j < pred.args.length; j++){
-                    sql += pred.bodySelCls()+"."+pred.functor + "_" + (j+1);
-                    sql += ", ";
-                }
+        String sql = "DELETE FROM "+head.functor + " USING ";
+
+        for (int i = 0; i < body.size(); i++){
+            if(body.get(i).functor.equals(head.functor)){
+                continue;
             }
-            if(sql.endsWith(", ")){
-                sql = sql.substring(0, sql.length()-2);
-            }
-            if(sql.equals("SELECT ")){
-                sql += " * ";
+            Predicate pred = body.get(i);
+            sql += pred.fromCls();
+            if (i < body.size() - 1){
+                sql += ", ";
             }
         }
-        else{  // rename the query result to rule's head
-            String target_functor = head.functor;
-            // get the head Arguments and Constant
-            Argument[] head_args = head.args;
-            for (int i = 0; i < head_args.length; i++){
-                Argument arg = head_args[i];
-                if (arg.isConstant){
-                    sql += ("\'" + arg.name+ "\'" + " AS " + target_functor + "_" + (i+1));
-                }else{
-                    Argument target_arg;
-                    try{
-                        target_arg = joinMap.get(arg.name).get(0);
-                        Predicate target_pred = allPredicates.get(target_arg.predicate_id);
-                        sql += (target_pred.bodySelCls()+"."+target_pred.functor+'_'+(target_arg.position+1) + " AS " + target_functor + "_" + (i+1));
-                    }catch(Exception e){
-                        System.out.println("arg.name: " + arg.name);
-                    }
+        if(sql.endsWith("USING ")){
+            sql = sql.substring(0, sql.length()-6);
+        }
+        String where_cls = "";
+        where_cls += " WHERE ";
+
+        Vector<Vector<Argument>> joins = getJoins();
+        for (int i = 0; i < joins.size(); i++){
+            Vector<Argument> join = joins.get(i);
+            Argument arg1 = join.get(0);
+            Predicate pred1 = allPredicates.get(arg1.predicate_id);
+            for(int j = 1; j < join.size(); j++){
+                Argument arg = join.get(j);
+                Predicate pred = allPredicates.get(arg.predicate_id);
+                where_cls += (pred.bodySelCls()+"."+pred.functor + "_" + (arg.position+1) + " = " + pred1.bodySelCls()+"."+pred1.functor + "_" + (arg1.position+1));
+                if ((j < join.size() - 1)||(i < joins.size() - 1)){
+                    where_cls += " AND ";
                 }
-                if (i < head_args.length - 1){
-                    sql += ", ";
-                }
+
             }
         }
-        sql += rule2SQL_where(tag, target_gold);
-        // sql += ";";
+
+        if(constantsBody.size() > 0 & !(where_cls.endsWith("AND ")) & joins.size() > 0){
+                where_cls += " AND ";
+        }
+        for (int i = 0; i < constantsBody.size(); i++){
+            Argument constant = constantsBody.get(i);
+            Predicate pred = allPredicates.get(constant.predicate_id);
+            where_cls += (pred.bodySelCls()+"."+pred.functor + "_" + (constant.position+1) + " = "  + constant.name);
+            if (i < constantsBody.size() - 1){
+                where_cls += " AND ";
+            }
+        }
+
+        while(where_cls.endsWith("AND ")){
+            where_cls = where_cls.substring(0, where_cls.length()-5);
+        }
+        if(!where_cls.equals(" WHERE ")){
+            sql += where_cls;
+        }
         return sql;
     }
 
     public int argSize(){
-        // get the number of arguments in the rule
+
         int size = 0;
         for (Predicate pred : body){
             size += pred.args.length;
@@ -957,7 +863,7 @@ public class DBRule {
         size += head.args.length;
         return size;
     }
-    // ????
+
     public boolean isValid(){
 
         for(Argument arg: head.args){
@@ -984,4 +890,399 @@ public class DBRule {
         }
         return predSet;
     }
+
+    public String rule2SQL_EXISTS(boolean tag, boolean query){
+        String sql = "SELECT DISTINCT ";
+
+        Integer firstSelectPredicateIdx = null;
+
+        if(!query && body.size() > 1){
+
+            firstSelectPredicateIdx = selectMainTable();
+        }
+
+        if(query){ 
+
+            for (int i = 0; i < body.size(); i++){
+                Predicate pred = body.get(i);
+                for(int j = 0; j < pred.args.length; j++){
+                    sql += pred.getColumnName(j);
+                    sql += ", ";
+                }
+            }
+            if(sql.endsWith(", ")){
+                sql = sql.substring(0, sql.length()-2);
+            }
+            if(sql.equals("SELECT ")){
+                sql += " * ";
+            }
+        }
+        else{  
+            Argument[] head_args = head.args;
+            boolean hasSelectItems = false;
+
+            for (int i = 0; i < head_args.length; i++){
+                Argument arg = head_args[i];
+                if (arg.isConstant){
+
+                    if(hasSelectItems){
+                        sql += ", ";
+                    }
+                    if(!head.getSoleColumnName(i).contains("?")){
+                        sql += ( arg.getName() + " AS " + head.getSoleColumnName(i));
+                    }else{
+                        sql +=  arg.getName();
+                    }
+                    hasSelectItems = true;
+                }else{
+                    Argument target_arg;
+                    try{
+                        target_arg = joinMap.get(arg.name).get(0);
+                        Predicate target_pred = allPredicates.get(target_arg.predicate_id);
+
+                        if(firstSelectPredicateIdx == null){
+                            for(int bIdx = 0; bIdx < body.size(); bIdx++){
+                                if(body.get(bIdx) == target_pred){
+                                    firstSelectPredicateIdx = bIdx;
+                                    break;
+                                }
+                            }
+                        }
+
+                        boolean shouldAddColumn = false;
+                        String columnToAdd = "";
+
+                        if(firstSelectPredicateIdx != null && firstSelectPredicateIdx < body.size()){
+                            Predicate mainPred = body.get(firstSelectPredicateIdx);
+
+                            for(int pos = 0; pos < mainPred.args.length; pos++){
+                                if(!mainPred.args[pos].isConstant && mainPred.args[pos].name.equals(arg.name)){
+                                    if(!head.getSoleColumnName(i).contains("?")){
+                                        columnToAdd = mainPred.getColumnName(pos) + " AS " + head.getSoleColumnName(i);
+                                    }else{
+                                        columnToAdd = mainPred.getColumnName(pos);
+                                    }
+                                    shouldAddColumn = true;
+                                    break;
+                                }
+                            }
+                        }else{
+
+                            if(!head.getSoleColumnName(i).contains("?")){
+                                columnToAdd = target_pred.getColumnName(target_arg.position) + " AS " + head.getSoleColumnName(i);
+                            }else{
+                                columnToAdd = target_pred.getColumnName(target_arg.position);
+                            }
+                            shouldAddColumn = true;
+                        }
+
+                        if(shouldAddColumn && !columnToAdd.isEmpty()){
+                            if(hasSelectItems){
+                                sql += ", ";
+                            }
+                            sql += columnToAdd;
+                            hasSelectItems = true;
+                        }
+                    }catch(Exception e){
+
+                    }
+                }
+            }
+
+            if(!hasSelectItems){
+                sql += "1";
+            }
+        }
+
+        while(sql.endsWith(", ")){
+            sql = sql.substring(0, sql.length()-2);
+        }
+
+        while(sql.endsWith(", ")){
+            sql = sql.substring(0, sql.length()-2);
+        }
+
+        this.forcedMainTableIndex = firstSelectPredicateIdx;
+
+        sql += rule2SQL_where_EXISTS(tag);
+
+        this.forcedMainTableIndex = null;
+
+        if(!query && body.size() > 1 && firstSelectPredicateIdx != null){
+            validateExistsSQL(sql, firstSelectPredicateIdx);
+        }
+
+        return sql;
+    }
+
+    private void validateExistsSQL(String sql, int mainTableIndex) {
+        if(mainTableIndex >= body.size()) return;
+
+        Predicate mainTable = body.get(mainTableIndex);
+
+        for(int i = 0; i < body.size(); i++){
+            if(i == mainTableIndex) continue;
+            Predicate otherTable = body.get(i);
+            String otherTableName = otherTable.functor;
+
+            if(sql.contains("\"" + otherTableName + "\".") && !sql.contains("FROM \"" + otherTableName + "\"")){
+                System.err.println("警告: EXISTS查询中SELECT子句引用了非主表的列: " + otherTableName);
+                System.err.println("SQL: " + sql);
+            }
+        }
+    }
+
+    public String rule2SQL_where_EXISTS(boolean tag){
+
+        if(body.size()==0){
+            return ""; 
+        }
+        if(body.size()==1){
+            return rule2SQL_where(tag); 
+        }
+
+        int mainIdx;
+        if(this.forcedMainTableIndex != null){
+            mainIdx = this.forcedMainTableIndex;
+        }else{
+            mainIdx = selectMainTable();
+        }
+        if(mainIdx != 0){
+            Predicate tmp = body.get(0);
+            body.set(0, body.get(mainIdx));
+            body.set(mainIdx, tmp);
+            mainIdx = 0; 
+        }
+
+        int atomNum = body.size();
+        String[] alias = new String[atomNum];
+        for(int i=0;i<atomNum;i++){
+            alias[i] = body.get(i).bodySelCls();
+        }
+
+        java.util.HashMap<String,String> varMap = new java.util.HashMap<>();
+
+        java.util.List<String> firstAtomConstantConds = new java.util.ArrayList<>();
+
+        Predicate firstPred = body.get(0); 
+        StringBuilder sqlBuilder = new StringBuilder();
+        sqlBuilder.append(" FROM ").append(firstPred.fromCls());
+
+        for(int pos=0;pos<firstPred.args.length;pos++){
+            Argument arg = firstPred.args[pos];
+            String colName = alias[0] + "." + firstPred.getSoleColumnName(pos);
+            if(arg.isConstant){
+                firstAtomConstantConds.add(colName + " = " + arg.name);
+            }else{
+                varMap.put(arg.name, colName);
+            }
+        }
+
+        if(tag){
+            firstAtomConstantConds.add(alias[0] + ".exists = '1'");
+        }
+
+        String nestedExists = buildNestedExistsChainForward(1, alias, varMap, tag);
+
+        java.util.List<String> outerConds = new java.util.ArrayList<>(firstAtomConstantConds);
+        if(!nestedExists.isEmpty()){
+            outerConds.add(nestedExists);
+        }
+        sqlBuilder.append(" WHERE ").append(String.join(" AND ", outerConds));
+
+        return sqlBuilder.toString();
+    }
+
+    private String buildNestedExistsChainForward(int startIdx, String[] alias, java.util.HashMap<String,String> outerVarMap, boolean tag){
+        if(startIdx >= body.size()){
+            return ""; 
+        }
+
+        Predicate pred = body.get(startIdx);
+        String ai = alias[startIdx];
+
+        java.util.List<String> conds = new java.util.ArrayList<>();
+
+        for(int pos=0; pos<pred.args.length; pos++){
+            Argument arg = pred.args[pos];
+            String colName = ai + "." + pred.getSoleColumnName(pos);
+            if(arg.isConstant){
+                conds.add(colName + " = " + arg.name);
+            }else{
+                if(outerVarMap.containsKey(arg.name)){
+
+                    conds.add(colName + " = " + outerVarMap.get(arg.name));
+                }
+            }
+        }
+
+        if(tag){
+            conds.add(ai + ".exists = '1'");
+        }
+
+        java.util.HashMap<String,String> nextVarMap = new java.util.HashMap<>(outerVarMap);
+        for(int pos=0; pos<pred.args.length; pos++){
+            Argument arg = pred.args[pos];
+            if(!arg.isConstant && !nextVarMap.containsKey(arg.name)){
+                String colName = ai + "." + pred.getSoleColumnName(pos);
+                nextVarMap.put(arg.name, colName);
+            }
+        }
+
+        String innerExists = buildNestedExistsChainForward(startIdx+1, alias, nextVarMap, tag);
+        if(!innerExists.isEmpty()){
+            conds.add(innerExists);
+        }
+
+        return "EXISTS (SELECT 1 FROM " + pred.fromCls() + " WHERE " + String.join(" AND ", conds) + ")";
+    }
+
+    private boolean isUserSpecificCase(){
+
+        if(body.size() != 3) return false;
+
+        int hyponymsCount = 0;
+        int partHolonymsCount = 0;
+
+        for(Predicate pred : body){
+            if(pred.functor.equals("hyponyms")){
+                hyponymsCount++;
+            } else if(pred.functor.equals("part_holonyms")){
+                partHolonymsCount++;
+            }
+        }
+
+        return hyponymsCount == 2 && partHolonymsCount == 1;
+    }
+
+    private Vector<String> getOrderedJoinConditions(int currentTableIndex, int parentTableIndex){
+        Vector<String> conditions = new Vector<String>();
+
+        int mainTableIndex = selectMainTable();
+
+        Vector<String> allJoinConditions = new Vector<String>();
+
+        String parentJoinCondition = getJoinConditionBetweenTables(parentTableIndex, currentTableIndex);
+        if(!parentJoinCondition.isEmpty()){
+            allJoinConditions.add(parentJoinCondition);
+        }
+
+        if(mainTableIndex != parentTableIndex){
+            String mainJoinCondition = getJoinConditionBetweenTables(mainTableIndex, currentTableIndex);
+            if(!mainJoinCondition.isEmpty()){
+                allJoinConditions.add(mainJoinCondition);
+            }
+        }
+
+        if(isSpecificOrderingNeeded(currentTableIndex, parentTableIndex, mainTableIndex)){
+
+            if(allJoinConditions.size() == 2){
+                conditions.add(allJoinConditions.get(1)); 
+                conditions.add(allJoinConditions.get(0)); 
+            } else {
+                conditions.addAll(allJoinConditions);
+            }
+        } else {
+            conditions.addAll(allJoinConditions);
+        }
+
+        return conditions;
+    }
+
+    private boolean isSpecificOrderingNeeded(int currentTableIndex, int parentTableIndex, int mainTableIndex){
+
+        if(body.size() == 3 && currentTableIndex == 2 && parentTableIndex == 1 && mainTableIndex == 0){
+            Predicate currentTable = body.get(currentTableIndex);
+            Predicate parentTable = body.get(parentTableIndex);
+            Predicate mainTable = body.get(mainTableIndex);
+
+            return currentTable.functor.equals("hyponyms") && 
+                   parentTable.functor.equals("part_holonyms") && 
+                   mainTable.functor.equals("hyponyms");
+        }
+        return false;
+    }
+
+    private int findDirectlyConnectedTable(int tableIndex, Vector<Integer> candidateTables, 
+                                         HashMap<String, Vector<Integer>> variableToTables){
+        for(String varName : variableToTables.keySet()){
+            Vector<Integer> connectedTables = variableToTables.get(varName);
+            if(connectedTables.contains(tableIndex)){
+
+                for(Integer candidateTable : candidateTables){
+                    if(connectedTables.contains(candidateTable)){
+                        return candidateTable;
+                    }
+                }
+            }
+        }
+        return -1; 
+    }
+
+    private String getJoinConditionBetweenTables(int table1Index, int table2Index){
+        Predicate table1 = body.get(table1Index);
+        Predicate table2 = body.get(table2Index);
+
+        Vector<Vector<Argument>> joins = getJoins();
+        Vector<String> conds = new Vector<String>();
+
+        for(Vector<Argument> join : joins){
+            Argument arg1 = null;
+            Argument arg2 = null;
+
+            for(Argument arg : join){
+                try {
+                    java.lang.reflect.Field predicateIdField = Argument.class.getDeclaredField("predicate_id");
+                    predicateIdField.setAccessible(true);
+                    int predicateId = (Integer) predicateIdField.get(arg);
+
+                    if(allPredicates.get(predicateId) == table1){
+                        arg1 = arg;
+                    } else if(allPredicates.get(predicateId) == table2){
+                        arg2 = arg;
+                    }
+                } catch (Exception e) {
+
+                }
+            }
+
+            if(arg1 != null && arg2 != null){
+                try {
+                    java.lang.reflect.Field positionField = Argument.class.getDeclaredField("position");
+                    positionField.setAccessible(true);
+                    int pos1 = (Integer) positionField.get(arg1);
+                    int pos2 = (Integer) positionField.get(arg2);
+
+                    conds.add(table2.getColumnName(pos2) + " = " + table1.getColumnName(pos1));
+                } catch (Exception e) {
+
+                }
+            }
+        }
+
+        return String.join(" AND ", conds);
+    }
+
+    private int selectMainTable(){
+
+        for(Argument headArg : head.args){
+            if(!headArg.isConstant){
+                Vector<Argument> joinArgs = joinMap.get(headArg.name);
+                if(joinArgs != null){
+                    for(Argument joinArg : joinArgs){
+                        if(joinArg.predicate_id > 0){
+                            for(int i = 0; i < body.size(); i++){
+                                if(allPredicates.get(joinArg.predicate_id) == body.get(i)){
+                                    return i;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return 0;
+    }
+
 }

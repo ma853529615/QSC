@@ -25,11 +25,11 @@ public class BayesianOptimizationPy {
 
     public double[][] X;
     public double[] Y;
-    
+
     public BayesianOptimizationPy(String acquisition_function, String dump_dir, String base_dir) {
-        // if base_dir is not exist, create it
+
         this.acquisition_function = acquisition_function;
-        // if dump_dir is not exist, create it
+
         File dumpDir = new File(dump_dir);
         if (!dumpDir.exists()) {
             dumpDir.mkdirs();
@@ -41,12 +41,11 @@ public class BayesianOptimizationPy {
         this.verbose_dir = dump_dir + VERBOSE_PATH;
     }
     public double[] optimize(int init_size, int nIterations, double[][] pred_X, QueryComp qc, List<ArrayTreeSet> deleted) throws Exception {
-        // uniformly sample 
+
+        int step = pred_X.length / init_size;
         for(int i = 0; i < init_size; i++) {
-            Random rand = new Random();
-            int index = rand.nextInt(pred_X.length);
-            double targetValue = targetFunction(pred_X[index], qc, deleted);
-            addSample(pred_X[index], targetValue);
+            double targetValue = targetFunction(pred_X[i*step], qc, deleted);
+            addSample(pred_X[i*step], targetValue);
         }
 
         StringBuilder sb = new StringBuilder();
@@ -59,7 +58,7 @@ public class BayesianOptimizationPy {
             sb.append("\n");
         }
         java.nio.file.Files.write(java.nio.file.Paths.get(train_dir), sb.toString().getBytes());
-        // dump pred_X to test_dir as csv
+
         sb = new StringBuilder();
         for(int j = 0; j < pred_X.length; j++) {
             for(int k = 0; k < pred_X[j].length; k++) {
@@ -72,14 +71,13 @@ public class BayesianOptimizationPy {
         }
         java.nio.file.Files.write(java.nio.file.Paths.get(test_dir), sb.toString().getBytes());
         for(int i=0;i<nIterations;i++){
-            // dump X and Y to train_dir as csv
 
             callBO(false);
-            // read result from result_dir
+
             double[] next_point = readResult(result_dir)[0];
             double targetValue = targetFunction(next_point, qc, deleted);
             addSample(next_point, targetValue);
-            
+
             sb = new StringBuilder();
             for(int j = 0; j < X.length; j++) {
                 for(int k = 0; k < X[j].length; k++) {
@@ -90,7 +88,7 @@ public class BayesianOptimizationPy {
                 sb.append("\n");
             }
             java.nio.file.Files.write(java.nio.file.Paths.get(train_dir), sb.toString().getBytes());
-            // dump pred_X to test_dir as csv
+
             sb = new StringBuilder();
             for(int j = 0; j < pred_X.length; j++) {
                 for(int k = 0; k < pred_X[j].length; k++) {
@@ -104,23 +102,80 @@ public class BayesianOptimizationPy {
             java.nio.file.Files.write(java.nio.file.Paths.get(test_dir), sb.toString().getBytes());
         }
         callBO(true);
-        // read result from result_dir
+
         double[][] result = readResult(result_dir);
-        /// get the result with lowest value in dimension 1
-        // double min = Double.MAX_VALUE;
-        // double[] best = new double[result[0].length];
-        // for(int i = 0; i < result.length; i++) {
-        //     if(result[i][1] < min) {
-        //         min = result[i][1];
-        //         for(int j = 0; j < result[i].length; j++) {
-        //             best[j] = result[i][j];
-        //         }   
-        //     }
-        // }
+
+        return result[0];
+    }
+    public double[] optimize_sequntial(int init_size, int nIterations, double[][] pred_X, QueryComp qc, List<ArrayTreeSet> deleted) throws Exception {
+
+        int step = pred_X.length / init_size;
+        for(int i = 0; i < init_size; i++) {
+            double targetValue = targetFunction_sequntial(pred_X[i*step], qc, deleted);
+            addSample(pred_X[i*step], targetValue);
+        }
+
+        StringBuilder sb = new StringBuilder();
+        for(int j = 0; j < X.length; j++) {
+            for(int k = 0; k < X[j].length; k++) {
+                sb.append(X[j][k]);
+                sb.append(",");
+            }
+            sb.append(Y[j]);
+            sb.append("\n");
+        }
+        java.nio.file.Files.write(java.nio.file.Paths.get(train_dir), sb.toString().getBytes());
+
+        sb = new StringBuilder();
+        for(int j = 0; j < pred_X.length; j++) {
+            for(int k = 0; k < pred_X[j].length; k++) {
+                sb.append(pred_X[j][k]);
+                if(k < pred_X[j].length - 1) {
+                    sb.append(",");
+                }
+            }
+            sb.append("\n");
+        }
+        java.nio.file.Files.write(java.nio.file.Paths.get(test_dir), sb.toString().getBytes());
+        for(int i=0;i<nIterations;i++){
+
+            callBO(false);
+
+            double[] next_point = readResult(result_dir)[0];
+            double targetValue = targetFunction(next_point, qc, deleted);
+            addSample(next_point, targetValue);
+
+            sb = new StringBuilder();
+            for(int j = 0; j < X.length; j++) {
+                for(int k = 0; k < X[j].length; k++) {
+                    sb.append(X[j][k]);
+                    sb.append(",");
+                }
+                sb.append(Y[j]);
+                sb.append("\n");
+            }
+            java.nio.file.Files.write(java.nio.file.Paths.get(train_dir), sb.toString().getBytes());
+
+            sb = new StringBuilder();
+            for(int j = 0; j < pred_X.length; j++) {
+                for(int k = 0; k < pred_X[j].length; k++) {
+                    sb.append(pred_X[j][k]);
+                    if(k < pred_X[j].length - 1) {
+                        sb.append(",");
+                    }
+                }
+                sb.append("\n");
+            }
+            java.nio.file.Files.write(java.nio.file.Paths.get(test_dir), sb.toString().getBytes());
+        }
+        callBO(true);
+
+        double[][] result = readResult(result_dir);
+
         return result[0];
     }
     public double[] optimize_cache(int init_size, int nIterations, double[][] pred_X, QueryComp qc, List<List<Double>> cached_latencies) throws Exception {
-        // uniformly sample 
+
         for(int i = 0; i < init_size; i++) {
             Random rand = new Random();
             int index = rand.nextInt(pred_X.length);
@@ -138,7 +193,7 @@ public class BayesianOptimizationPy {
             sb.append("\n");
         }
         java.nio.file.Files.write(java.nio.file.Paths.get(train_dir), sb.toString().getBytes());
-        // dump pred_X to test_dir as csv
+
         sb = new StringBuilder();
         for(int j = 0; j < pred_X.length; j++) {
             for(int k = 0; k < pred_X[j].length; k++) {
@@ -151,14 +206,13 @@ public class BayesianOptimizationPy {
         }
         java.nio.file.Files.write(java.nio.file.Paths.get(test_dir), sb.toString().getBytes());
         for(int i=0;i<nIterations;i++){
-            // dump X and Y to train_dir as csv
 
             callBO(false);
-            // read result from result_dir
+
             double[] next_point = readResult(result_dir)[0];
             double targetValue = targetFunction_cache(next_point, qc, cached_latencies);
             addSample(next_point, targetValue);
-            
+
             sb = new StringBuilder();
             for(int j = 0; j < X.length; j++) {
                 for(int k = 0; k < X[j].length; k++) {
@@ -169,7 +223,7 @@ public class BayesianOptimizationPy {
                 sb.append("\n");
             }
             java.nio.file.Files.write(java.nio.file.Paths.get(train_dir), sb.toString().getBytes());
-            // dump pred_X to test_dir as csv
+
             sb = new StringBuilder();
             for(int j = 0; j < pred_X.length; j++) {
                 for(int k = 0; k < pred_X[j].length; k++) {
@@ -183,19 +237,9 @@ public class BayesianOptimizationPy {
             java.nio.file.Files.write(java.nio.file.Paths.get(test_dir), sb.toString().getBytes());
         }
         callBO(true);
-        // read result from result_dir
+
         double[][] result = readResult(result_dir);
-        /// get the result with lowest value in dimension 1
-        // double min = Double.MAX_VALUE;
-        // double[] best = new double[result[0].length];
-        // for(int i = 0; i < result.length; i++) {
-        //     if(result[i][1] < min) {
-        //         min = result[i][1];
-        //         for(int j = 0; j < result[i].length; j++) {
-        //             best[j] = result[i][j];
-        //         }   
-        //     }
-        // }
+
         return result[0];
     }
     private double targetFunction_cache(double[] x, QueryComp qc, List<List<Double>> cached_latencies) throws Exception {  
@@ -204,7 +248,10 @@ public class BayesianOptimizationPy {
     private double targetFunction(double[] x, QueryComp qc, List<ArrayTreeSet> deleted) throws Exception {  
         return qc.getQueryTime(x[0], deleted);
     } 
-
+    private double targetFunction_sequntial(double[] x, QueryComp qc, List<ArrayTreeSet> deleted) throws Exception {  
+        qc.getQueryTime_recompress(x[0]);
+        return qc.getQueryTime(x[0], deleted);
+    } 
     private double[][] readResult(String filePath) throws IOException {
         BufferedReader br = new BufferedReader(new FileReader(filePath));
         String line;
@@ -248,7 +295,7 @@ public class BayesianOptimizationPy {
     }
 
     public void callBO(boolean best) throws Exception {
-        // delete the verbose file if it exists
+
         java.nio.file.Files.deleteIfExists(java.nio.file.Paths.get(verbose_dir));
         String[] cmd ;
         if (best) {

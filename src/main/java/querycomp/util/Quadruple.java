@@ -28,5 +28,5 @@ public class Quadruple<T,V,U,W> {
     public W getFourth() {
         return fourth;
     }
-    
+
 }

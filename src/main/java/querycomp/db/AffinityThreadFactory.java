@@ -6,14 +6,12 @@ import com.sun.jna.Pointer;
 import com.sun.jna.Platform;
 
 public class AffinityThreadFactory implements ThreadFactory {
-    private final ConnectionPool connectionPool;
     private final AtomicInteger threadNumber = new AtomicInteger(1);
     private final String namePrefix;
     private final int availableCores;
     private final AtomicInteger coreCounter = new AtomicInteger(0);
 
-    public AffinityThreadFactory(ConnectionPool connectionPool) {
-        this.connectionPool = connectionPool;
+    public AffinityThreadFactory() {
         this.namePrefix = "AffinityThread-";
         this.availableCores = Runtime.getRuntime().availableProcessors();
     }
@@ -57,6 +55,3 @@ public class AffinityThreadFactory implements ThreadFactory {
         }
     }
 }
-
-
-

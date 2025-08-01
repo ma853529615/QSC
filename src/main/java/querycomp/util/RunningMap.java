@@ -7,8 +7,7 @@ import java.util.Map;
 
 public class RunningMap {
     private Map<double[], List<Double>> map = new HashMap<>();
-    public RunningMap() {
-    }
+
     public void set(double[] key, double value) {
         if (!map.containsKey(key)) {
             map.put(key, new ArrayList<>());
@@ -16,7 +15,7 @@ public class RunningMap {
         map.get(key).add(value);
     }
     public double get(double[] key) {
-        // return the average of the values
+
         List<Double> values = map.get(key);
         if (values == null) {
             return Double.MAX_VALUE;

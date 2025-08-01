@@ -22,4 +22,3 @@ public class Triple<T, U, V> {
         return third;
     }
 }
-
