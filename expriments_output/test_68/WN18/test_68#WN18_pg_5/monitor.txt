@@ -1,0 +1,648 @@
+Base Path:	/NewData/mjh/KR/QC_submit
+KB Name:	WN18
+Stats Filename:	test_68#WN18_pg_5
+Only Validation:	false
+Base Path:	empty
+DB Type:	pg
+DB Info:	localhost:5432/wn18
+Acquisition Function:	qnehvi
+
+
+Base Path:	/NewData/mjh/KR/QC_submit
+KB Name:	WN18
+Stats Filename:	test_68#WN18_pg_5
+Only Validation:	false
+Base Path:	empty
+DB Type:	pg
+DB Info:	localhost:5432/wn18
+Acquisition Function:	qnehvi
+
+
+Base Path:	/NewData/mjh/KR/QC_submit
+KB Name:	WN18
+Stats Filename:	test_68#WN18_pg_5
+Only Validation:	false
+Base Path:	empty
+DB Type:	pg
+DB Info:	localhost:5432/wn18
+Acquisition Function:	qnehvi
+
+
+[exp start]
+new added avaliable#rules: 2134
+[new rule in]
+this compression ratio: 0.75422275
+this patience: 0
+this time now: 310
+count: 1
+[new rule in]
+this compression ratio: 0.6490406
+this patience: 0
+this time now: 577
+count: 2
+[new rule in]
+this compression ratio: 0.5966905
+this patience: 0
+this time now: 602
+count: 3
+[new rule in]
+this compression ratio: 0.5746689
+this patience: 0
+this time now: 638
+count: 4
+[new rule in]
+this compression ratio: 0.5538688
+this patience: 0
+this time now: 653
+count: 5
+[new rule in]
+this compression ratio: 0.5473845
+this patience: 0
+this time now: 676
+count: 6
+[new rule in]
+this compression ratio: 0.54296696
+this patience: 0
+this time now: 686
+count: 7
+[new rule in]
+this compression ratio: 0.54245853
+this patience: 0
+this time now: 1445
+count: 8
+[new rule in]
+this compression ratio: 0.5420953
+this patience: 0
+this time now: 1934
+count: 9
+[new rule in]
+this compression ratio: 0.54176515
+this patience: 0
+this time now: 2055
+count: 10
+[new rule in]
+this compression ratio: 0.5414548
+this patience: 0
+this time now: 2188
+count: 11
+[new rule in]
+this compression ratio: 0.54115105
+this patience: 0
+this time now: 2235
+count: 12
+[new rule in]
+this compression ratio: 0.5408539
+this patience: 0
+this time now: 2275
+count: 13
+[new rule in]
+this compression ratio: 0.5405766
+this patience: 0
+this time now: 2421
+count: 14
+[new rule in]
+this compression ratio: 0.5403521
+this patience: 0
+this time now: 2994
+count: 15
+[new rule in]
+this compression ratio: 0.5401342
+this patience: 0
+this time now: 3129
+count: 16
+[new rule in]
+this compression ratio: 0.5399427
+this patience: 0
+this time now: 3410
+count: 17
+[new rule in]
+this compression ratio: 0.5397512
+this patience: 0
+this time now: 3468
+count: 18
+[new rule in]
+this compression ratio: 0.5395597
+this patience: 0
+this time now: 3524
+count: 19
+[new rule in]
+this compression ratio: 0.5393748
+this patience: 0
+this time now: 3588
+count: 20
+[new rule in]
+this compression ratio: 0.53918993
+this patience: 0
+this time now: 3645
+count: 21
+[new rule in]
+this compression ratio: 0.5390183
+this patience: 0
+this time now: 3975
+count: 22
+[new rule in]
+this compression ratio: 0.53884655
+this patience: 0
+this time now: 4059
+count: 23
+[new rule in]
+this compression ratio: 0.5386815
+this patience: 0
+this time now: 4087
+count: 24
+[new rule in]
+this compression ratio: 0.5385164
+this patience: 0
+this time now: 4120
+count: 25
+[new rule in]
+this compression ratio: 0.5383513
+this patience: 0
+this time now: 4226
+count: 26
+[new rule in]
+this compression ratio: 0.53819287
+this patience: 0
+this time now: 4471
+count: 27
+[new rule in]
+this compression ratio: 0.5380343
+this patience: 0
+this time now: 4543
+count: 28
+[new rule in]
+this compression ratio: 0.53788245
+this patience: 0
+this time now: 4833
+count: 29
+[new rule in]
+this compression ratio: 0.53773725
+this patience: 0
+this time now: 5088
+count: 30
+[new rule in]
+this compression ratio: 0.53759855
+this patience: 0
+this time now: 5491
+count: 31
+[new rule in]
+this compression ratio: 0.5374665
+this patience: 0
+this time now: 5698
+count: 32
+[new rule in]
+this compression ratio: 0.537341
+this patience: 0
+this time now: 6078
+count: 33
+[new rule in]
+this compression ratio: 0.5372156
+this patience: 0
+this time now: 6118
+count: 34
+[new rule in]
+this compression ratio: 0.53709006
+this patience: 0
+this time now: 6212
+count: 35
+[new rule in]
+this compression ratio: 0.53696465
+this patience: 0
+this time now: 6397
+count: 36
+[new rule in]
+this compression ratio: 0.5368392
+this patience: 0
+this time now: 6496
+count: 37
+[new rule in]
+this compression ratio: 0.53672034
+this patience: 0
+this time now: 6965
+count: 38
+[new rule in]
+this compression ratio: 0.5366015
+this patience: 0
+this time now: 6988
+count: 39
+[new rule in]
+this compression ratio: 0.5364826
+this patience: 0
+this time now: 7398
+count: 40
+[new rule in]
+this compression ratio: 0.5363704
+this patience: 0
+this time now: 7510
+count: 41
+[new rule in]
+this compression ratio: 0.5362581
+this patience: 0
+this time now: 7582
+count: 42
+[new rule in]
+this compression ratio: 0.53614587
+this patience: 0
+this time now: 7604
+count: 43
+[new rule in]
+this compression ratio: 0.53603363
+this patience: 0
+this time now: 7884
+count: 44
+[new rule in]
+this compression ratio: 0.53592795
+this patience: 0
+this time now: 8418
+count: 45
+[new rule in]
+this compression ratio: 0.5358223
+this patience: 0
+this time now: 8603
+count: 46
+[new rule in]
+this compression ratio: 0.53571665
+this patience: 0
+this time now: 8833
+count: 47
+[new rule in]
+this compression ratio: 0.53561103
+this patience: 0
+this time now: 8895
+count: 48
+[new rule in]
+this compression ratio: 0.53550535
+this patience: 0
+this time now: 8972
+count: 49
+[new rule in]
+this compression ratio: 0.5354063
+this patience: 0
+this time now: 9374
+count: 50
+[new rule in]
+this compression ratio: 0.5353073
+this patience: 0
+this time now: 9380
+count: 51
+[new rule in]
+this compression ratio: 0.5352082
+this patience: 0
+this time now: 9589
+count: 52
+[new rule in]
+this compression ratio: 0.5351157
+this patience: 0
+this time now: 9809
+count: 53
+[new rule in]
+this compression ratio: 0.53502333
+this patience: 0
+this time now: 10012
+count: 54
+[new rule in]
+this compression ratio: 0.5349308
+this patience: 0
+this time now: 10036
+count: 55
+[new rule in]
+this compression ratio: 0.53483844
+this patience: 0
+this time now: 10041
+count: 56
+[new rule in]
+this compression ratio: 0.53474593
+this patience: 0
+this time now: 10078
+count: 57
+[new rule in]
+this compression ratio: 0.53465354
+this patience: 0
+this time now: 10128
+count: 58
+[new rule in]
+this compression ratio: 0.5345611
+this patience: 0
+this time now: 10158
+count: 59
+[new rule in]
+this compression ratio: 0.53446865
+this patience: 0
+this time now: 10175
+count: 60
+[new rule in]
+this compression ratio: 0.5343762
+this patience: 0
+this time now: 10277
+count: 61
+[new rule in]
+this compression ratio: 0.53428376
+this patience: 0
+this time now: 10321
+count: 62
+[new rule in]
+this compression ratio: 0.5341979
+this patience: 0
+this time now: 10970
+count: 63
+[new rule in]
+this compression ratio: 0.5341121
+this patience: 0
+this time now: 10995
+count: 64
+[new rule in]
+this compression ratio: 0.53402627
+this patience: 0
+this time now: 11005
+count: 65
+[new rule in]
+this compression ratio: 0.5339404
+this patience: 0
+this time now: 11049
+count: 66
+[new rule in]
+this compression ratio: 0.53385454
+this patience: 0
+this time now: 11059
+count: 67
+[new rule in]
+this compression ratio: 0.5337687
+this patience: 0
+this time now: 11069
+count: 68
+[new rule in]
+this compression ratio: 0.5336828
+this patience: 0
+this time now: 11175
+count: 69
+[new rule in]
+this compression ratio: 0.533597
+this patience: 0
+this time now: 11233
+count: 70
+[new rule in]
+this compression ratio: 0.53351116
+this patience: 0
+this time now: 11279
+count: 71
+[new rule in]
+this compression ratio: 0.53342533
+this patience: 0
+this time now: 11567
+count: 72
+[new rule in]
+this compression ratio: 0.5333395
+this patience: 0
+this time now: 11666
+count: 73
+[new rule in]
+this compression ratio: 0.53325367
+this patience: 0
+this time now: 12206
+count: 74
+[new rule in]
+this compression ratio: 0.53316784
+this patience: 0
+this time now: 12231
+count: 75
+[new rule in]
+this compression ratio: 0.533082
+this patience: 0
+this time now: 12284
+count: 76
+[new rule in]
+this compression ratio: 0.5329961
+this patience: 0
+this time now: 12521
+count: 77
+[new rule in]
+this compression ratio: 0.5329169
+this patience: 0
+this time now: 12880
+count: 78
+[new rule in]
+this compression ratio: 0.5328376
+this patience: 0
+this time now: 12930
+count: 79
+[new rule in]
+this compression ratio: 0.5327584
+this patience: 0
+this time now: 13047
+count: 80
+[new rule in]
+this compression ratio: 0.5326792
+this patience: 0
+this time now: 13057
+count: 81
+[new rule in]
+this compression ratio: 0.5325999
+this patience: 0
+this time now: 13104
+count: 82
+[new rule in]
+this compression ratio: 0.5325207
+this patience: 0
+this time now: 13128
+count: 83
+[new rule in]
+this compression ratio: 0.5324415
+this patience: 0
+this time now: 13185
+count: 84
+[new rule in]
+this compression ratio: 0.5323622
+this patience: 0
+this time now: 13326
+count: 85
+[new rule in]
+this compression ratio: 0.53228295
+this patience: 0
+this time now: 13426
+count: 86
+[new rule in]
+this compression ratio: 0.53220373
+this patience: 0
+this time now: 13596
+count: 87
+[new rule in]
+this compression ratio: 0.5321245
+this patience: 0
+this time now: 13625
+count: 88
+[new rule in]
+this compression ratio: 0.53204525
+this patience: 0
+this time now: 13637
+count: 89
+[new rule in]
+this compression ratio: 0.53196603
+this patience: 0
+this time now: 13819
+count: 90
+[new rule in]
+this compression ratio: 0.5318868
+this patience: 0
+this time now: 13864
+count: 91
+[new rule in]
+this compression ratio: 0.53180754
+this patience: 0
+this time now: 14084
+count: 92
+[new rule in]
+this compression ratio: 0.5317283
+this patience: 0
+this time now: 14196
+count: 93
+[new rule in]
+this compression ratio: 0.5316491
+this patience: 0
+this time now: 14283
+count: 94
+rule count all: 2134
+rule count perfect: 1501
+rule count sorted: 1501
+rule count filtered: 1501
+rule count fus: 1501
+rule count contribute: 94
+[]delta time: 161.72073
+[]test query time: 23524
+test query time: 17
+[]delta time: 24821.754
+[]test query time: 23715
+test query time: 12
+[]delta time: 9708.915
+[]test query time: 23994
+test query time: 13
+[]delta time: 12930.938
+[]test query time: 25160
+test query time: 12
+[]delta time: 15925.142
+[]test query time: 27163
+test query time: 11
+[]delta time: 9818.16
+[]test query time: 27767
+test query time: 12
+[]delta time: 9724.025
+[]test query time: 29621
+test query time: 12
+Base Path:	/NewData/mjh/KR/QC_submit
+KB Name:	WN18
+Stats Filename:	test_68#WN18_pg_5
+Only Validation:	false
+Base Path:	empty
+DB Type:	pg
+DB Info:	localhost:5432/wn18
+Acquisition Function:	qnehvi
+
+
+Base Path:	/NewData/mjh/KR/QSC
+KB Name:	WN18
+Stats Filename:	test_68#WN18_pg_5
+Only Validation:	false
+Base Path:	empty
+DB Type:	pg
+DB Info:	localhost:5432/wn18
+Acquisition Function:	qnehvi
+
+
+Base Path:	/NewData/mjh/KR/QSC
+KB Name:	WN18
+Stats Filename:	test_68#WN18_pg_5
+Only Validation:	false
+Base Path:	empty
+DB Type:	duckdb
+DB Info:	./dbfile/
+Acquisition Function:	qnehvi
+
+
+[exp start]
+new added avaliable#rules: 1987
+[new rule in]
+this compression ratio: 0.999551
+this patience: 0
+this time now: 183
+count: 1
+[new rule in]
+this compression ratio: 0.99945855
+this patience: 0
+this time now: 189
+count: 2
+[new rule in]
+this compression ratio: 0.9994189
+this patience: 0
+this time now: 194
+count: 3
+[new rule in]
+this compression ratio: 0.9993859
+this patience: 0
+this time now: 198
+count: 4
+[new rule in]
+this compression ratio: 0.9993727
+this patience: 0
+this time now: 203
+count: 5
+[new rule in]
+this compression ratio: 0.9993661
+this patience: 0
+this time now: 207
+count: 6
+rule count all: 1987
+rule count perfect: 1501
+rule count sorted: 1501
+rule count filtered: 1501
+rule count fus: 1501
+rule count contribute: 6
+[]delta time: 3008.3428
+[]test query time: 91094
+test query time: 34
+[]delta time: 6033.231
+[]test query time: 88290
+test query time: 18
+[]delta time: 3009.3882
+[]test query time: 87923
+test query time: 17
+[]delta time: 3006.417
+[]test query time: 89211
+test query time: 17
+final test for best rule num: 4
+[]delta time: 9022.704
+[]test query time: 90335
+test query time: 38
+decompressTime: 0
+rewriteTime: 26003193
+rewrite_cte_time: 0
+origin_time: 127288114
+unionTime: 158412301
+cte_rewrite_time: 4787160
+cte_0_time: 183279702
+cte_1_time: 3206966
+cte_2_time: 105071576
+test_unionTime: 156229511
+test_originTime: 124572410
+test_rewriteTime: 25164945
+test_cte_rewriteTime: 0
+test_cte_0_time: 0
+test_cte_1_time: 0
+test_cte_2_time: 0
+loadTime: 51326
+extractTime: 0
+filterTime: 0
+fusFilterTime: 466
+RuleEntailTime: 11846
+RuleConfTime: 5450
+entailTime: 11846
+compressTime: 0
+allcompressTime: 29608
+ruleSelectTime: 0
+removeTime: 0
+iterRemoveTime: 2961
+optimizeTime: 2
+filtered#rule :4
+this compression ratio: 0.9479283314669653
+[]test query time: 92627
+recover validation passed
+recover time: 81ms
+test query time: 108

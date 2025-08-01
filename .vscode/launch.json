@@ -1,0 +1,47 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+
+        {
+            "type": "java",
+            "name": "Current File",
+            "request": "launch",
+            "mainClass": "${file}"
+        },
+        {
+            "type": "java",
+            "name": "duckdb",
+            "request": "launch",
+            "mainClass": "qsc.Main",
+            "projectName": "QSC",
+            "vmArgs": [
+                "-Xms10G",
+                "-Xmx64G"
+            ],
+            "args": [
+                "-I",
+                "/NewData/mjh/KR/QSC",
+                "WN18",
+                // "-d",
+                // "pg",
+                // "-i",
+                // "localhost:5432/wn18",
+                "-d",
+                "duckdb",
+                "-i",
+                "./dbfile/",
+                "-s",
+                "test_68#WN18_pg_5",
+                "-a",
+                "qnehvi",
+
+                // "-V",
+                // "-B",
+                // "/NewData/mjh/KR/QC/QueryComp_1/expriments_output/union_LUBM_pg_2/LUBM-10/union_LUBM_pg_2#LUBM-10/LUBM-10_compressed"
+            ]
+        },
+    ]
+}

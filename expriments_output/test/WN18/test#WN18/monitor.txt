@@ -1,0 +1,20 @@
+Base Path:	/NewData/mjh/KR/QC_submit
+KB Name:	WN18
+Stats Filename:	test#WN18
+Only Validation:	false
+Base Path:	empty
+DB Type:	pg
+DB Info:	localhost:5432/wn18
+Acquisition Function:	qnehvi
+
+
+Base Path:	/NewData/mjh/KR/QC_submit
+KB Name:	WN18
+Stats Filename:	test#WN18
+Only Validation:	false
+Base Path:	empty
+DB Type:	pg
+DB Info:	localhost:5432/wn18
+Acquisition Function:	qehvi
+
+

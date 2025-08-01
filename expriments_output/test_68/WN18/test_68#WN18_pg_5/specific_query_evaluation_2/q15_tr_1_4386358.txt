@@ -1,0 +1,1 @@
+original query: SELECT DISTINCT "part_of"."part_of_1", "part_of"."part_of_2" FROM "part_of". original time: 4386358UCQ: (SELECT DISTINCT "part_of"."part_of_1", "part_of"."part_of_2" FROM "part_of")rewrite time: 526235AQMAT rewrite time: 20496UCQ time: 3971166AQMAT: 4452337AQMAT: 0AQMAT: 0AQMAT query: SELECT DISTINCT part_of.part_of_1, part_of.part_of_2 FROM part_of

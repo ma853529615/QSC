@@ -1,0 +1,10 @@
+Base Path:	/NewData/mjh/KR/QC_submit
+KB Name:	LUBM-10
+Stats Filename:	test_68#LUBM-10_pg_5
+Only Validation:	false
+Base Path:	empty
+DB Type:	pg
+DB Info:	localhost:5432/lubm_10
+Acquisition Function:	qnehvi
+
+

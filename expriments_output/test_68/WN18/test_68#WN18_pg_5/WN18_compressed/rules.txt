@@ -1,0 +1,4 @@
+member_of_domain_region(united_kingdom.n.01, X) :- synset_domain_region_of(X, united_kingdom.n.01)
+instance_hyponym(european_country.n.01, X) :- instance_hypernym(X, european_country.n.01)
+member_of_domain_usage(slang.n.02, X) :- synset_domain_usage_of(X, slang.n.02)
+member_of_domain_usage(disparagement.n.01, X) :- synset_domain_usage_of(X, disparagement.n.01)
