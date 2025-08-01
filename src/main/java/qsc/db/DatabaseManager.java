@@ -391,6 +391,7 @@ public class DatabaseManager {
         Map<String,String> rel2cte = new HashMap<>();
         HashSet<String> handled  = new HashSet<>();
 
+
         for (Predicate p : predicates) {
             String rel = p.functor;
             if (relation2cte.containsKey(rel) && !handled.contains(rel)) {
@@ -407,11 +408,12 @@ public class DatabaseManager {
                 }
 
                 String create;
-                if ("duckdb".equalsIgnoreCase(dbType)) {
-                    create = "CREATE TEMPORARY TABLE " + tableName + " AS " + body + ";";
-                } else { 
-                    create = "CREATE MATERIALIZED VIEW IF NOT EXISTS " + head + " AS " + body + ";";
-                }
+                // if ("duckdb".equalsIgnoreCase(dbType)) {
+                //     create = "CREATE TEMPORARY TABLE " + tableName + " AS " + body + ";";
+                // } else { 
+                //     create = "CREATE TEMPORARY TABLE " + head + " AS " + body + ";";
+                // }
+                create = "CREATE TEMPORARY TABLE " + tableName + " AS " + body + ";";
                 stmts.add(create);
                 rel2cte.put(rel, tableName);
                 handled.add(rel);
@@ -5200,4 +5202,3 @@ private String buildNestedExistsForCTE(Predicate[] predicates, int idx, Map<Stri
         return path.substring(0, dataDirIndex);
     }
 }
-

@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 query_evaluation_cte_pg.py  —— PostgreSQL 版本的 CTE 查询评估脚本
-处理 N 条物化查询 + 1 条主查询，打印三段耗时以及总耗时。
+处理 N 条物化查询 + 1 条主查询，在同一连接中顺序执行（支持临时表），打印三段耗时以及总耗时。
 用法: python query_evaluation_cte_pg.py <config.json>
 """
 import json
@@ -60,47 +60,40 @@ def main():
     if threads_param:
         print(f"线程参数(仅打印): {threads_param}")
 
-    # --- 并行执行物化 SQL（每条语句单独连接） ---
-    def run_mat(sql: str) -> int:
-        """执行单条物化 SQL，返回耗时(ns)"""
-        with psycopg2.connect(dsn) as c, c.cursor() as cur:
-            c.autocommit = True
-            # 只计时查询执行本身，与直接查询脚本保持一致
+    # --- 在同一个连接中顺序执行所有查询（临时表需要保持连接） ---
+    conn = psycopg2.connect(dsn)
+    conn.autocommit = True
+    
+    # 若配置中带有 cache，则尝试按 work_mem / temp_buffers 设置（需超级用户或足够权限）
+
+    with conn.cursor() as cur:
+        # 顺序执行物化 SQL（因为临时表需要同一个连接，无法并行）
+        if cache:
+            try:
+                cur.execute(f"SET work_mem TO '{cache}';")
+                cur.execute(f"SET temp_buffers TO '{cache}';")
+            except Exception as e:
+                print(f"缓存参数设置失败: {e}")
+
+        for sql in mat_sqls:
             start = time.perf_counter_ns()
             try:
                 cur.execute(sql)
                 if cur.description is not None:
                     cur.fetchall()
                 end = time.perf_counter_ns()
-                return end - start
+                mat_time += (end - start)
             except Exception as e:
-                print(f"执行查询失败: {e}")
-                return 0
-
-    if mat_sqls:
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        # 线程数：默认为物化语句数量和 CPU 核心数中的较小值，可在 cfg 里用 parallelism 指定
-        max_workers = cfg.get('parallelism') or min(8, len(mat_sqls))
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            for fut in as_completed([pool.submit(run_mat, s) for s in mat_sqls]):
-                mat_time += fut.result()
-
-    # --- 主查询（单连接即可） ---
-    conn = psycopg2.connect(dsn)
-    conn.autocommit = True
-    # 若配置中带有 cache，则尝试按 work_mem / temp_buffers 设置（需超级用户或足够权限）
-    if cache:
-        try:
-            with conn.cursor() as c:
-                c.execute(f"SET work_mem TO '{cache}';")
-                c.execute(f"SET temp_buffers TO '{cache}';")
-        except Exception as e:
-            print(f"缓存参数设置失败: {e}")
-
-    with conn.cursor() as cur:
+                print(f"执行物化查询失败: {e}")
+                conn.close()
+                sys.exit(1)
+        
+        # 执行主查询
         start_main = time.perf_counter_ns()
         exec_sql(cur, main_sql)
         main_time = time.perf_counter_ns() - start_main
+
+    conn.close()
 
     total = mat_time + creation_time + main_time
     print(f"物化查询执行时间: {mat_time}纳秒")
