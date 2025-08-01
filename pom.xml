@@ -5,7 +5,7 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>MJH</groupId>
-    <artifactId>QueryComp</artifactId>
+    <artifactId>QSC</artifactId>
     <version>1.0</version>
 
     <properties>

@@ -24,11 +24,13 @@
 3. **PostgreSQL (optional)**
    If you wish to run on PostgreSQL, install and configure a server—see the official guide:
    [https://www.postgresql.org/docs/17/index.html](https://www.postgresql.org/docs/17/index.html)
-
-## Running the System
-
+## Compile the System
 ```bash
-java -Xmx{memory_limit} -I {absolute_path_of_program} {dataset_name} \
+mvn package
+```
+## Running the System
+```bash
+java -jar -Xmx{memory_limit} ./target/QSC-1.0.jar -I {absolute_path_of_program} {dataset_name} \
      -d {pg|duckdb} \
      -i {pg_db_path|duckdb_db_path} \
      -s {experiment_name} \
@@ -38,9 +40,9 @@ java -Xmx{memory_limit} -I {absolute_path_of_program} {dataset_name} \
 **Example:**
 
 ```bash
-java -Xmx32G -I XX/QC_submit WN18 \
+java -jar -Xmx32G ./target/QSC-1.0.jar -I XX/QC_submit WN18 \
      -d pg \
      -i localhost:5432/wn18 \
      -s test#WN18 \
-     -a qnehvi
+     -a qehvi
 ```
